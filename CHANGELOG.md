@@ -1,5 +1,8 @@
 # Changelog
 
+### v1.0.3
+- Picked up XP & Skills System 2.5.3, which folds the Character.gd override chain-fix alongside the earlier Interface.gd fix. All XP overrides on Character.gd (Energy / Hydration / Mental / Stamina / Temperature / Clamp) now chain `super()` so any future Character.gd-overriding mod stacked on top of the bundle still runs. Math is preserved at default MCM values.
+
 ### v1.0.2
 - Bumped bundled mod versions to match their post-shrink-textures releases:
   - Cash System 2.9.1 → 2.9.2

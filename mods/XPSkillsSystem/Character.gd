@@ -28,99 +28,73 @@ func Health(delta):
             if gameData.health < maxHP:
                 gameData.health += delta * regen_rate
 
-func Energy(delta):
-    if !gameData.starvation:
-        var hungerMult = 1.0
-        if xp_mod:
-            hungerMult = 1.0 - (xp_mod.get_level(3) * xp_mod.cfg_hunger_reduce) - xp_mod.prestige_hunger_bonus()
-        gameData.energy -= (delta / 30.0) * hungerMult
+# Energy / Hydration / Mental / Temperature drains use the same trick:
+# zero out the vanilla `gameData.xpXXX` stat bonus so base class's built-in
+# (1 - xpXXX * 0.08) multiplier becomes 1.0, then scale `delta` so the net
+# drain rate ends up at `delta * our_multiplier / N`. Identical output to
+# the old full-replacement but preserves the override chain.
 
-    if gameData.energy <= 0 && !gameData.starvation:
-        Starvation(true)
-    elif gameData.energy > 0 && gameData.starvation:
-        Starvation(false)
+func Energy(delta):
+    if xp_mod == null or gameData.starvation:
+        super(delta)
+        return
+    var bonus = xp_mod.get_level(3) * xp_mod.cfg_hunger_reduce + xp_mod.prestige_hunger_bonus()
+    var saved = gameData.xpHunger
+    gameData.xpHunger = 0
+    super(delta * (1.0 - bonus))
+    gameData.xpHunger = saved
 
 func Hydration(delta):
-    if !gameData.dehydration:
-        var thirstMult = 1.0
-        if xp_mod:
-            thirstMult = 1.0 - (xp_mod.get_level(4) * xp_mod.cfg_thirst_reduce) - xp_mod.prestige_thirst_bonus()
-        gameData.hydration -= (delta / 20.0) * thirstMult
-
-    if gameData.hydration <= 0 && !gameData.dehydration:
-        Dehydration(true)
-    elif gameData.hydration > 0 && gameData.dehydration:
-        Dehydration(false)
+    if xp_mod == null or gameData.dehydration:
+        super(delta)
+        return
+    var bonus = xp_mod.get_level(4) * xp_mod.cfg_thirst_reduce + xp_mod.prestige_thirst_bonus()
+    var saved = gameData.xpThirst
+    gameData.xpThirst = 0
+    super(delta * (1.0 - bonus))
+    gameData.xpThirst = saved
 
 func Mental(delta):
-    if gameData.heat:
-        gameData.mental += delta / 4.0
+    # Heat regen uses raw delta, not the mental multiplier — forward
+    # unscaled in that case so the +delta/4 regen in base isn't distorted.
+    if xp_mod == null or gameData.heat or gameData.insanity:
+        super(delta)
+        return
+    var bonus = xp_mod.get_level(5) * xp_mod.cfg_mental_reduce + xp_mod.prestige_mental_bonus()
+    var saved = gameData.xpMental
+    gameData.xpMental = 0
+    super(delta * (1.0 - bonus))
+    gameData.xpMental = saved
 
-    elif !gameData.insanity:
-        var mentalMult = 1.0
-        if xp_mod:
-            mentalMult = 1.0 - (xp_mod.get_level(5) * xp_mod.cfg_mental_reduce) - xp_mod.prestige_mental_bonus()
-        if (gameData.overweight
-        || gameData.dehydration
-        || gameData.starvation
-        || gameData.bleeding
-        || gameData.fracture
-        || gameData.burn
-        || gameData.frostbite
-        || gameData.poisoning
-        || gameData.rupture
-        || gameData.headshot):
-            gameData.mental -= (delta / 5.0) * mentalMult
-        else:
-            gameData.mental -= (delta / 35.0) * mentalMult
-
-    if gameData.mental <= 0 && !gameData.insanity:
-        Insanity(true)
-    elif gameData.mental > 0 && gameData.insanity:
-        Insanity(false)
-
+# Stamina has both drain (staminaMult applies) and regen (no mult). We
+# can't scale delta without distorting regen, so inject `xpStamina` at the
+# equivalent level instead — base's `1 - xpStamina * 0.10` formula will
+# produce our desired multiplier on drains. Regen branches don't use the
+# multiplier so they pass through untouched.
 func Stamina(delta):
-    var staminaMult = 1.0
-    if xp_mod:
-        staminaMult = 1.0 - (xp_mod.get_level(1) * xp_mod.cfg_stamina_reduce) - xp_mod.prestige_stamina_bonus()
+    if xp_mod == null:
+        super(delta)
+        return
+    var bonus = xp_mod.get_level(1) * xp_mod.cfg_stamina_reduce + xp_mod.prestige_stamina_bonus()
+    var saved = gameData.xpStamina
+    gameData.xpStamina = int(round(bonus / 0.10))
+    super(delta)
+    gameData.xpStamina = saved
 
-    if gameData.bodyStamina > 0 && (gameData.isRunning || gameData.overweight || (gameData.isSwimming && gameData.isMoving)):
-        if gameData.overweight || gameData.starvation || gameData.dehydration:
-            gameData.bodyStamina -= delta * 4.0 * staminaMult
-        else:
-            gameData.bodyStamina -= delta * 2.0 * staminaMult
-
-    elif gameData.bodyStamina < 100:
-        if gameData.starvation || gameData.dehydration:
-            gameData.bodyStamina += delta * 5.0
-        else:
-            gameData.bodyStamina += delta * 10.0
-
-    if gameData.armStamina > 0 && ((gameData.primary || gameData.secondary) && (gameData.weaponPosition == 2 || gameData.isAiming || gameData.isCanted || gameData.isInspecting || gameData.overweight) || (gameData.isSwimming && gameData.isMoving)):
-        if gameData.overweight || gameData.starvation || gameData.dehydration:
-            gameData.armStamina -= delta * 4.0 * staminaMult
-        else:
-            gameData.armStamina -= delta * 2.0 * staminaMult
-
-    elif gameData.armStamina < 100:
-        if gameData.starvation || gameData.dehydration:
-            gameData.armStamina += delta * 10.0
-        else:
-            gameData.armStamina += delta * 20.0
-
+# Clamp: base caps health at `100 + xpHealth * 5`. We want
+# `100 + (skill_level * cfg_hp_per_level + prestige_hp_bonus)`. Inject the
+# equivalent xpHealth (rounded up so base's clamp doesn't trim us below
+# the intended max) then re-clamp precisely afterward.
 func Clamp():
-    var maxHP = 100.0
-    if xp_mod:
-        maxHP += xp_mod.get_level(0) * xp_mod.cfg_hp_per_level + xp_mod.prestige_hp_bonus()
-    gameData.health = clampf(gameData.health, 0, maxHP)
-    gameData.energy = clampf(gameData.energy, 0, 100)
-    gameData.hydration = clampf(gameData.hydration, 0, 100)
-    gameData.mental = clampf(gameData.mental, 0, 100)
-    gameData.temperature = clampf(gameData.temperature, 0, 100)
-    gameData.cat = clampf(gameData.cat, 0, 100)
-    gameData.bodyStamina = clampf(gameData.bodyStamina, 0, 100)
-    gameData.armStamina = clampf(gameData.armStamina, 0, 100)
-    gameData.oxygen = clampf(gameData.oxygen, 0, 100)
+    if xp_mod == null:
+        super()
+        return
+    var extra: float = xp_mod.get_level(0) * xp_mod.cfg_hp_per_level + xp_mod.prestige_hp_bonus()
+    var saved: int = gameData.xpHealth
+    gameData.xpHealth = int(ceil(extra / 5.0))
+    super()
+    gameData.xpHealth = saved
+    gameData.health = clampf(gameData.health, 0, 100.0 + extra)
 
 func Death():
     if xp_mod and xp_mod.cfg_death_resets:
@@ -133,25 +107,14 @@ func Consume(item: ItemData):
     if xp_mod:
         xp_mod.award_skillbook_xp(item)
 
+# Temperature: base has no xp-based multiplier, so we scale delta only in
+# the cold-drain branch. Regen branches (indoor/shelter/heat) pass through
+# super with unscaled delta.
 func Temperature(delta):
-    if gameData.season == 1 || gameData.shelter || gameData.tutorial || gameData.heat:
-        gameData.temperature += delta
-    elif gameData.season == 2:
-        var coldMult = 1.0
-        if xp_mod:
-            coldMult = 1.0 - (xp_mod.get_level(7) * xp_mod.cfg_coldres_reduce) - xp_mod.prestige_coldres_bonus()
+    var is_regenerating: bool = gameData.season == 1 or gameData.shelter or gameData.tutorial or gameData.heat
+    if xp_mod == null or is_regenerating:
+        super(delta)
+        return
+    var bonus: float = xp_mod.get_level(7) * xp_mod.cfg_coldres_reduce + xp_mod.prestige_coldres_bonus()
+    super(delta * (1.0 - bonus))
 
-        if !gameData.frostbite:
-            if gameData.isSubmerged:
-                gameData.temperature -= (delta * 8.0) * insulation * coldMult
-            elif gameData.isWater:
-                gameData.temperature -= (delta * 4.0) * insulation * coldMult
-            elif gameData.indoor:
-                gameData.temperature -= (delta / 10.0) * insulation * coldMult
-            else:
-                gameData.temperature -= (delta / 5.0) * insulation * coldMult
-
-    if gameData.temperature <= 0 && !gameData.frostbite:
-        Frostbite(true)
-    elif gameData.temperature > 0 && gameData.frostbite:
-        Frostbite(false)

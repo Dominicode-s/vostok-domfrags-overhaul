@@ -8,7 +8,7 @@ A single VMZ that bundles six mods into one coordinated package. Install this on
 |---|---|---|
 | **Cash System** | Adds cash items that drop as loot and fund trader purchases. Injects a cash item pool into the loot database, adds a wallet UI at traders, sell/buy flow. | 2.9.2 |
 | **Secure Container** | Three tiers of secure pouches (Field / Secure / Case) as lootable items with their own tetris-inventory window. Protects contents across deaths (configurable). | 1.0.6 |
-| **XP & Skills System** | 13-skill progression tree with XP earned from containers / kills / tasks / trades. Prestige ranks, skill books, MCM-tunable rewards and bonuses. | 2.5.2 |
+| **XP & Skills System** | 13-skill progression tree with XP earned from containers / kills / tasks / trades. Prestige ranks, skill books, MCM-tunable rewards and bonuses. | 2.5.3 |
 | **Quick Stack & Sort** | Inventory QoL — quick-stack into containers, full sort with multiple modes, per-slot locking. | 2.5.1 |
 | **Run Summary** | Post-run stats modal after death or shelter return. Persistent history of last 10 runs with XP earned, kills, damage taken, cash earned/spent, and more. | 1.2.5 |
 | **Vostok AI** | Tactical AI overhaul — 5 personality archetypes, squad coordination, group spawning with formations, suppression, panic, call-for-backup, weapon-role awareness, enhanced hearing, investigation, XP-scaled difficulty. | 1.2.0 |

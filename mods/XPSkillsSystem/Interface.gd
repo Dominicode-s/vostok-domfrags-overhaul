@@ -109,6 +109,10 @@ func _drop_skillbook(target, scene: PackedScene):
     UpdateStats(true)
 
 func _process(delta):
+    # Chain to anything else overriding _process. Base Interface.gd has no
+    # _process, but calling super() keeps the modloader CHAIN OK and lets
+    # any mod layered on top of ours cooperate.
+    super(delta)
     if skillsUI and skillsUI.visible:
         _xp_refresh_timer += delta
         if _xp_refresh_timer >= 0.5:
@@ -143,83 +147,40 @@ func LoadDefaultTool(tool: int):
     if skillsButton: skillsButton.set_pressed_no_signal(false)
 
 func UpdateStats(updateLabels: bool):
-    await get_tree().physics_frame
+    # Chain first so base game (and any mod between us and base, e.g. Cash or
+    # Secure Container in the future) gets to compute its version. Then we
+    # apply the skill-based carry-weight bonus on top and re-evaluate any
+    # derived state (overweight flag, capacity-dependent label colours)
+    # that the base already calculated without our bonus.
+    await super(updateLabels)
 
-    currentInventoryCapacity = 0.0
-    currentInventoryWeight = 0.0
-    currentInventoryValue = 0.0
-    currentEquipmentValue = 0.0
-    currentContainerWeight = 0.0
-    currentContainerValue = 0.0
-    currentEquipmentWeight = 0.0
-    currentEquipmentValue = 0.0
-    currentEquipmentInsulation = 0.0
-    currentSupplyValue = 0.0
-    inventoryWeightPercentage = 0.0
-
-    for equipmentSlot in equipment.get_children():
-        if equipmentSlot is Slot && equipmentSlot.get_child_count() != 0:
-            currentEquipmentWeight += equipmentSlot.get_child(0).Weight()
-            currentEquipmentValue += equipmentSlot.get_child(0).Value()
-            currentInventoryCapacity += equipmentSlot.get_child(0).slotData.itemData.capacity
-            currentEquipmentInsulation += equipmentSlot.get_child(0).slotData.itemData.insulation
-
-    currentInventoryCapacity += baseCarryWeight
     var xp_mod = Engine.get_meta("XPMain", null)
-    if xp_mod:
-        currentInventoryCapacity += xp_mod.get_level(2) * xp_mod.cfg_carry_per_level + xp_mod.prestige_carry_bonus()
-    insulationMultiplier = 1.0 - (currentEquipmentInsulation / 100.0)
-    character.insulation = insulationMultiplier
+    if xp_mod == null:
+        return
+    var bonus: float = xp_mod.get_level(2) * xp_mod.cfg_carry_per_level + xp_mod.prestige_carry_bonus()
+    if bonus == 0.0:
+        return
+    currentInventoryCapacity += bonus
 
-    for element in inventoryGrid.get_children():
-        currentInventoryWeight += element.Weight()
-        currentInventoryValue += element.Value()
-
+    # Re-run overweight + heavyGear checks with the adjusted capacity.
+    # Base Character.Overweight() is idempotent — calling with the same
+    # value a second time is a cheap no-op.
     if currentInventoryWeight > currentInventoryCapacity:
         if !gameData.overweight:
             character.Overweight(true)
     else:
         character.Overweight(false)
 
-    var combinedWeight = currentInventoryWeight + currentEquipmentWeight
-
-    if combinedWeight > 20:
-        character.heavyGear = true
-    else:
-        character.heavyGear = false
-
-    if container:
-        for element in containerGrid.get_children():
-            currentContainerWeight += element.Weight()
-            currentContainerValue += element.Value()
-
-    if trader:
-        for element in supplyGrid.get_children():
-            currentSupplyValue += element.Value()
-
+    # Refresh labels that are a direct function of capacity so the UI
+    # reflects the post-bonus value rather than base's pre-bonus one.
     if updateLabels:
-        inventoryWeightPercentage = currentInventoryWeight / currentInventoryCapacity
+        if currentInventoryCapacity > 0:
+            inventoryWeightPercentage = currentInventoryWeight / currentInventoryCapacity
         inventoryCapacity.text = str("%.1f" % currentInventoryCapacity)
-        inventoryWeight.text = str("%.1f" % currentInventoryWeight)
-        inventoryValue.text = str(int(round(currentInventoryValue)))
-
+        equipmentCapacity.text = str(int(round(currentInventoryCapacity))) + "kg"
         if inventoryWeightPercentage > 1: inventoryWeight.modulate = Color.RED
         elif inventoryWeightPercentage >= 0.5: inventoryWeight.modulate = Color.YELLOW
         else: inventoryWeight.modulate = Color.GREEN
-
-        equipmentCapacity.text = str(int(round(currentInventoryCapacity))) + "kg"
-        equipmentValue.text = str(int(round(currentEquipmentValue)))
-        equipmentInsulation.text = str(int(round(currentEquipmentInsulation)))
-
-        if currentEquipmentInsulation <= 25: equipmentInsulation.modulate = Color.RED
-        elif currentEquipmentInsulation > 25 && currentEquipmentInsulation <= 50: equipmentInsulation.modulate = Color.YELLOW
-        else: equipmentInsulation.modulate = Color.GREEN
-
-        if container:
-            containerWeight.text = str("%.1f" % currentContainerWeight)
-            containerValue.text = str(int(round(currentContainerValue)))
-        if trader:
-            supplyValue.text = str(int(round(currentSupplyValue)))
 
 # --- Skills UI ---
 

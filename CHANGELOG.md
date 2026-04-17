@@ -1,5 +1,12 @@
 # Changelog
 
+### v1.0.2
+- Bumped bundled mod versions to match their post-shrink-textures releases:
+  - Cash System 2.9.1 → 2.9.2
+  - Secure Container 1.0.5 → 1.0.6
+  - XP & Skills System 2.5.0 → 2.5.2
+- XP 2.5.2 additionally fixes the Interface.gd `CHAIN BROKEN` warning that appeared when Cash + Secure Container + XP were loaded together. `_process` now threads `super(delta)` and `UpdateStats` is a delta-style override on top of the base-game method instead of a silent full-replacement.
+
 ### v1.0.1
 - Texture optimization — VMZ size reduced from 31 MB → 7 MB (77% smaller) with no visual impact:
   - Skillbook icon PNGs pre-resampled to 128×256 on disk. The XP mod was already calling `Image.INTERPOLATE_LANCZOS` to this exact target at load time, so shipping at source resolution (720×1456) was pure bandwidth waste. Zero functional change.

@@ -1,7 +1,7 @@
 [mod]
 name="Vostok DomFrags Overhaul"
 id="vostok-domfrags-overhaul"
-version="1.0.1"
+version="1.0.2"
 priority=0
 [autoload]
 CashMain="res://mods/CashSystem/Main.gd"

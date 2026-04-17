@@ -1,0 +1,212 @@
+[gd_scene format=3 uid="uid://b640bo76josxr"]
+
+[ext_resource type="Theme" uid="uid://bropuksxsvs0g" path="res://UI/Themes/Theme.tres" id="1_kldh7"]
+[ext_resource type="PackedScene" uid="uid://dy2bw3aan461c" path="res://mods/RunSummary/scenes/templates/RunSummaryHistoryEntry.tscn" id="2_767f0"]
+[ext_resource type="Texture2D" uid="uid://d23losleykfsr" path="res://UI/Sprites/Icon_Time.png" id="2_obqdo"]
+
+[sub_resource type="StyleBoxEmpty" id="StyleBoxEmpty_kldh7"]
+
+[sub_resource type="StyleBoxEmpty" id="StyleBoxEmpty_767f0"]
+
+[node name="Overlay" type="ColorRect"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme = ExtResource("1_kldh7")
+color = Color(0, 0, 0, 0.8)
+
+[node name="Panel" type="PanelContainer" parent="."]
+custom_minimum_size = Vector2(600, 0)
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -300.0
+offset_top = -444.0
+offset_right = 300.0
+offset_bottom = 444.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("1_kldh7")
+
+[node name="PanelMargin" type="MarginContainer" parent="Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+
+[node name="PanelContent" type="VBoxContainer" parent="Panel/PanelMargin"]
+layout_mode = 2
+
+[node name="HeaderOuterMargin" type="MarginContainer" parent="Panel/PanelMargin/PanelContent"]
+layout_mode = 2
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 8
+
+[node name="Header" type="PanelContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin"]
+layout_mode = 2
+size_flags_vertical = 0
+theme_override_styles/panel = SubResource("StyleBoxEmpty_kldh7")
+
+[node name="HeaderInnerMargin" type="MarginContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header"]
+layout_mode = 2
+
+[node name="HeaderContent" type="HBoxContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin"]
+layout_mode = 2
+
+[node name="TitleContainer" type="VBoxContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="TitleContent" type="HBoxContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent/TitleContainer"]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="TitleIconMargin" type="MarginContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent/TitleContainer/TitleContent"]
+layout_mode = 2
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 4
+theme_override_constants/margin_bottom = 4
+
+[node name="TitleIcon" type="TextureRect" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent/TitleContainer/TitleContent/TitleIconMargin"]
+layout_mode = 2
+texture = ExtResource("2_obqdo")
+expand_mode = 3
+stretch_mode = 6
+
+[node name="Title" type="Label" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent/TitleContainer/TitleContent"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(128, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 24
+text = "Run History"
+vertical_alignment = 1
+autowrap_mode = 2
+
+[node name="SubtitleContent" type="HBoxContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent/TitleContainer"]
+custom_minimum_size = Vector2(0, 23)
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 8
+
+[node name="Subtitle" type="Label" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent/TitleContainer/SubtitleContent"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 0.78431374)
+theme_override_font_sizes/font_size = 16
+text = "Personal Progress Tracker"
+vertical_alignment = 1
+
+[node name="Meta" type="VBoxContainer" parent="Panel/PanelMargin/PanelContent/HeaderOuterMargin/Header/HeaderInnerMargin/HeaderContent"]
+layout_mode = 2
+
+[node name="Scroll" type="ScrollContainer" parent="Panel/PanelMargin/PanelContent"]
+custom_minimum_size = Vector2(0, 720)
+layout_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="ScrollMargin" type="MarginContainer" parent="Panel/PanelMargin/PanelContent/Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/margin_right = 16
+
+[node name="Content" type="VBoxContainer" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin"]
+layout_mode = 2
+
+[node name="HistoryContainer" type="VBoxContainer" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="EmptyNotice" type="MarginContainer" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="EmptyNoticeText" type="Label" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer/EmptyNotice"]
+layout_mode = 2
+text = "No runs recorded yet."
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="RunSummaryHistoryEntry" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_2" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_3" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_4" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_5" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_6" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_7" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_8" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_9" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_10" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_11" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryEntry_12" parent="Panel/PanelMargin/PanelContent/Scroll/ScrollMargin/Content/HistoryContainer" instance=ExtResource("2_767f0")]
+layout_mode = 2
+
+[node name="FooterOuterMargin" type="MarginContainer" parent="Panel/PanelMargin/PanelContent"]
+layout_mode = 2
+theme_override_constants/margin_top = 16
+
+[node name="Footer" type="PanelContainer" parent="Panel/PanelMargin/PanelContent/FooterOuterMargin"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxEmpty_767f0")
+
+[node name="FooterInnerMargin" type="MarginContainer" parent="Panel/PanelMargin/PanelContent/FooterOuterMargin/Footer"]
+layout_mode = 2
+
+[node name="FooterContent" type="VBoxContainer" parent="Panel/PanelMargin/PanelContent/FooterOuterMargin/Footer/FooterInnerMargin"]
+layout_mode = 2
+
+[node name="ButtonRow" type="HBoxContainer" parent="Panel/PanelMargin/PanelContent/FooterOuterMargin/Footer/FooterInnerMargin/FooterContent"]
+custom_minimum_size = Vector2(0, 36)
+layout_mode = 2
+alignment = 1
+
+[node name="BackButton" type="Button" parent="Panel/PanelMargin/PanelContent/FooterOuterMargin/Footer/FooterInnerMargin/FooterContent/ButtonRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(158, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+focus_mode = 0
+text = "← Return"
+
+[node name="CloseButton" type="Button" parent="Panel/PanelMargin/PanelContent/FooterOuterMargin/Footer/FooterInnerMargin/FooterContent/ButtonRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(158, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+focus_mode = 0
+toggle_mode = true
+button_pressed = true
+text = "Close  [Esc]"

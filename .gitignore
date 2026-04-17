@@ -1,0 +1,6 @@
+*.vmz
+*.zip
+.godot/
+*.import
+Thumbs.db
+.DS_Store

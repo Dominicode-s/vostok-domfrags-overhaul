@@ -1,0 +1,13 @@
+[mod]
+name="Vostok DomFrags Overhaul"
+id="vostok-domfrags-overhaul"
+version="1.0.0"
+priority=0
+[autoload]
+CashMain="res://mods/CashSystem/Main.gd"
+SecureContainerConfig="res://mods/SecureContainer/Config.gd"
+SecureContainer="res://mods/SecureContainer/Main.gd"
+XPMain="res://mods/XPSkillsSystem/Main.gd"
+QuickStackMain="res://mods/QuickStack/Main.gd"
+RunSummaryMain="res://mods/RunSummary/Main.gd"
+VostokAIMain="res://mods/VostokAI/Main.gd"

@@ -1,0 +1,178 @@
+[gd_scene format=3 uid="uid://dy2bw3aan461c"]
+
+[ext_resource type="Theme" uid="uid://bropuksxsvs0g" path="res://UI/Themes/Theme.tres" id="1_dqr62"]
+[ext_resource type="Texture2D" uid="uid://w6fmfoufhkiv" path="res://UI/Sprites/Icon_Status.png" id="2_xc3nk"]
+[ext_resource type="Texture2D" uid="uid://diqmy3qp57dtl" path="res://UI/Sprites/Icon_Rupture.png" id="3_hfjpw"]
+[ext_resource type="PackedScene" uid="uid://c2nmabdrjvth7" path="res://mods/RunSummary/scenes/templates/RunSummaryHistoryStatPart.tscn" id="4_hfjpw"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_lgjms"]
+bg_color = Color(0.6, 0.6, 0.6, 0.12156863)
+
+[node name="RunSummaryHistoryEntry" type="MarginContainer" unique_id=450940071]
+custom_minimum_size = Vector2(400, 0)
+mouse_filter = 2
+theme = ExtResource("1_dqr62")
+theme_override_constants/margin_top = 8
+
+[node name="VBoxContainer" type="VBoxContainer" parent="." unique_id=1585402955]
+layout_mode = 2
+
+[node name="HeaderOuterMargin" type="MarginContainer" parent="VBoxContainer" unique_id=775637385]
+layout_mode = 2
+theme_override_constants/margin_top = 0
+theme_override_constants/margin_bottom = 4
+
+[node name="Header" type="VBoxContainer" parent="VBoxContainer/HeaderOuterMargin" unique_id=150585828]
+layout_mode = 2
+
+[node name="HeaderSubtitleTimestamp" type="HBoxContainer" parent="VBoxContainer/HeaderOuterMargin/Header" unique_id=378744205]
+layout_mode = 2
+alignment = 2
+
+[node name="Timestamp" type="Label" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderSubtitleTimestamp" unique_id=173454978]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 0.39215687)
+theme_override_font_sizes/font_size = 12
+text = "0000-00-00T00:00:00"
+vertical_alignment = 1
+
+[node name="HeaderContainer" type="PanelContainer" parent="VBoxContainer/HeaderOuterMargin/Header" unique_id=1081881254]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_lgjms")
+
+[node name="HeaderContainerMargin" type="MarginContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer" unique_id=1362707198]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_right = 8
+
+[node name="HeaderContent" type="HBoxContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin" unique_id=2018789316]
+layout_mode = 2
+
+[node name="HeaderSuccess" type="HBoxContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent" unique_id=1834176872]
+unique_name_in_owner = true
+visible = false
+modulate = Color(0.58431375, 0.6745098, 0.23137255, 1)
+custom_minimum_size = Vector2(0, 36)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 0
+
+[node name="HeaderIconMargin" type="MarginContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderSuccess" unique_id=1087173253]
+layout_mode = 2
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 6
+
+[node name="HeaderIcon" type="TextureRect" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderSuccess/HeaderIconMargin" unique_id=1656960100]
+layout_mode = 2
+texture = ExtResource("2_xc3nk")
+expand_mode = 3
+stretch_mode = 6
+
+[node name="Header" type="Label" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderSuccess" unique_id=1487988131]
+layout_mode = 2
+size_flags_vertical = 1
+mouse_filter = 1
+text = "Extracted"
+vertical_alignment = 1
+
+[node name="HeaderFailure" type="HBoxContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent" unique_id=469619352]
+unique_name_in_owner = true
+modulate = Color(0.88354945, 0.34472135, 0.23961034, 1)
+custom_minimum_size = Vector2(0, 36)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 0
+
+[node name="HeaderIconMargin" type="MarginContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderFailure" unique_id=1385072330]
+layout_mode = 2
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 6
+
+[node name="HeaderIcon" type="TextureRect" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderFailure/HeaderIconMargin" unique_id=2020022475]
+layout_mode = 2
+texture = ExtResource("3_hfjpw")
+expand_mode = 3
+stretch_mode = 6
+
+[node name="Header" type="Label" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderFailure" unique_id=371929849]
+layout_mode = 2
+size_flags_vertical = 1
+mouse_filter = 1
+text = "Died"
+vertical_alignment = 1
+
+[node name="HeaderSubtitle" type="VBoxContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent" unique_id=307433249]
+layout_mode = 2
+size_flags_horizontal = 8
+
+[node name="HeaderSubtitleMeta" type="HBoxContainer" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderSubtitle" unique_id=1180977530]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 4
+alignment = 2
+
+[node name="Map" type="Label" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderSubtitle/HeaderSubtitleMeta" unique_id=668316595]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 0.78431374)
+theme_override_font_sizes/font_size = 12
+text = "Location"
+vertical_alignment = 1
+
+[node name="SubtitleSeparator" type="Label" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderSubtitle/HeaderSubtitleMeta" unique_id=452532524]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 0.39215687)
+theme_override_font_sizes/font_size = 12
+text = "•"
+vertical_alignment = 1
+
+[node name="Duration" type="Label" parent="VBoxContainer/HeaderOuterMargin/Header/HeaderContainer/HeaderContainerMargin/HeaderContent/HeaderSubtitle/HeaderSubtitleMeta" unique_id=887579835]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 0.78431374)
+theme_override_font_sizes/font_size = 12
+text = "0m 00s"
+vertical_alignment = 1
+
+[node name="Body" type="VBoxContainer" parent="VBoxContainer" unique_id=1207461194]
+layout_mode = 2
+
+[node name="PartsContainer" type="FlowContainer" parent="VBoxContainer/Body" unique_id=1382526771]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 4
+
+[node name="RunSummaryHistoryStatPart" parent="VBoxContainer/Body/PartsContainer" unique_id=1615140496 instance=ExtResource("4_hfjpw")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryStatPart_2" parent="VBoxContainer/Body/PartsContainer" unique_id=2009356087 instance=ExtResource("4_hfjpw")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryStatPart_3" parent="VBoxContainer/Body/PartsContainer" unique_id=1219757774 instance=ExtResource("4_hfjpw")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryStatPart_4" parent="VBoxContainer/Body/PartsContainer" unique_id=238354063 instance=ExtResource("4_hfjpw")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryStatPart_5" parent="VBoxContainer/Body/PartsContainer" unique_id=1254863869 instance=ExtResource("4_hfjpw")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryStatPart_6" parent="VBoxContainer/Body/PartsContainer" unique_id=576425398 instance=ExtResource("4_hfjpw")]
+layout_mode = 2
+
+[node name="RunSummaryHistoryStatPart_7" parent="VBoxContainer/Body/PartsContainer" unique_id=1593242151 instance=ExtResource("4_hfjpw")]
+layout_mode = 2
+
+[node name="FooterOuterMargin" type="MarginContainer" parent="VBoxContainer" unique_id=853435070]
+layout_mode = 2
+
+[node name="Footer" type="HBoxContainer" parent="VBoxContainer/FooterOuterMargin" unique_id=45048135]
+layout_mode = 2
+
+[node name="FooterInnerMargin" type="MarginContainer" parent="VBoxContainer/FooterOuterMargin/Footer" unique_id=733460431]
+layout_mode = 2
+size_flags_horizontal = 3

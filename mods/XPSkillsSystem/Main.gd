@@ -48,7 +48,9 @@ var _controller_base_sprint: float = 5.0
 
 # Scavenger SFX
 var _sfx_search: AudioStreamMP3
-var _sfx_door: AudioStreamMP3
+# Scavenger SFX config (MCM)
+var cfg_scavenger_sfx_enabled: bool = true
+var cfg_scavenger_sfx_volume: int = 80  # 0-100 (%) mapped to dB
 
 # Composure — cache the hit-shake Node3D (runs res://Scripts/Damage.gd) so we
 # can dampen its rotation in _physics_process without overriding the script.
@@ -73,6 +75,26 @@ var xpRecoil: int = 0
 var xpSpeed: int = 0
 var xpScavenger: int = 0
 var xpComposure: int = 0
+
+# Skills UI state (formerly on Interface.gd subclass; now held here so hooks
+# can build + refresh the UI without extending vanilla Interface).
+var skillsButton: Button
+var skillsUI: Control
+var skillsXPLabel: Label
+var skillRows: Array = []
+var skillNames = ["Vitality", "Endurance", "Pack Mule", "Hunger Resist", "Thirst Resist", "Iron Will", "Regeneration", "Cold Resistance", "Stealth", "Recoil Control", "Athleticism", "Scavenger", "Composure"]
+var skillMaxDefault = [10, 10, 10, 10, 10, 10, 5, 10, 10, 10, 5, 5, 5]
+var skillCostBaseDefault = [25, 25, 20, 20, 20, 20, 50, 20, 25, 25, 30, 30, 25]
+var skillDescs = ["+5 Max HP", "-10% Stamina Drain", "+2kg Carry Weight", "-8% Hunger Drain", "-8% Thirst Drain", "-8% Mental Drain", "+0.2 HP/sec Regen", "-8% Cold Drain", "-5% AI Hearing Range", "-5% Weapon Recoil", "+4% Movement Speed", "+5% Loot Chance (better at higher levels)", "-10% Camera Shake From Hits"]
+var skillsBuilt = false
+var skillDescLabels: Array = []
+var _xp_ui_refresh_timer: float = 0.0
+var _skills_vbox: VBoxContainer
+var _skill_row_panels: Array = []
+var _prestige_button: Button = null
+var _prestige_status_label: Label = null
+var _prestige_modal: Control = null
+var _prestige_section: VBoxContainer = null
 
 # Config — XP rewards
 var cfg_xp_container: float = 1.0
@@ -135,6 +157,13 @@ var _skillbook_catalog: Dictionary = {}  # file -> {skills: Array, item_data: It
 # Shelter persistence — base LoadShelter won't know our items exist, so we
 # re-instantiate any skill-book pickups saved in the shelter .tres ourselves.
 var _sb_last_scene_name: String = ""
+
+# Path to the runtime-parsed book mesh. Referencing res://...MS_Book.obj as
+# a path-only ext_resource has proven fragile for community users — Godot
+# resolves via UID first and path fallback second, and the fallback can
+# fail in some mod-load configurations. We parse the vanilla .obj ourselves
+# into a stable user:// ArrayMesh to eliminate that failure mode.
+const SKILLBOOK_MESH_PATH: String = "user://XPSkillbook_Mesh.res"
 
 var skill_xp_pool: Dictionary = {}
 
@@ -213,17 +242,867 @@ func _ready():
     # finished its own _ready first. Calling reload()/take_over_path() inline
     # during autoload init can race with mods that already resolved the base
     # script (MCM in particular).
-    call_deferred("_install_overrides")
+    _register_character_hooks()
+    _register_interface_hooks()
+    call_deferred("_install_skillbook_hooks")
     get_tree().node_added.connect(_on_node_added)
 
-func _install_overrides():
-    # Only Interface.gd and Character.gd overrides are kept.
-    # Interface.gd: Skills UI tab, carry weight, button integration.
-    # Character.gd: Health bonus (max HP), regen, vitals drain reduction, death reset.
-    # All other overrides replaced with compat polling in _process().
-    overrideScript("res://mods/XPSkillsSystem/Interface.gd")
-    overrideScript("res://mods/XPSkillsSystem/Character.gd")
-    _install_skillbook_hooks()
+# Character hooks — replaces the old Character.gd subclass under MML v3.0.0.
+# Design:
+#   Health   → post-hook only (add regen after super)
+#   Energy / Hydration / Mental / Stamina / Temperature → pre+post pair
+#       pre  saves "before" state on the character instance
+#       post reads it, computes what super drained, applies skill reducer
+#   Clamp    → replace + skip_super (full replacement — XP widens max HP which
+#              a post-hook can't recover from after super's clampf)
+#   Death    → pre-hook (reset XP before super handles death chain)
+#   Consume  → post-hook (award skillbook XP after super processes eat)
+func _register_character_hooks() -> void:
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null:
+        push_warning("[XPSkillsSystem] RTVModLib not available — Character hooks disabled")
+        return
+    lib.hook("character-health-post",      _hook_character_health_post)
+    lib.hook("character-energy-pre",       _hook_character_energy_pre)
+    lib.hook("character-energy-post",      _hook_character_energy_post)
+    lib.hook("character-hydration-pre",    _hook_character_hydration_pre)
+    lib.hook("character-hydration-post",   _hook_character_hydration_post)
+    lib.hook("character-mental-pre",       _hook_character_mental_pre)
+    lib.hook("character-mental-post",      _hook_character_mental_post)
+    lib.hook("character-stamina-pre",      _hook_character_stamina_pre)
+    lib.hook("character-stamina-post",     _hook_character_stamina_post)
+    lib.hook("character-temperature-pre",  _hook_character_temperature_pre)
+    lib.hook("character-temperature-post", _hook_character_temperature_post)
+    lib.hook("character-clamp",            _hook_character_clamp)
+    lib.hook("character-death-pre",        _hook_character_death_pre)
+    lib.hook("character-consume-post",     _hook_character_consume_post)
+
+func _hook_character_health_post(_delta):
+    # Passive regen after super processes damage. Prestige regen + per-skill
+    # rate both count; max HP also widens via prestige.
+    if gameData.isDead or gameData.health <= 0:
+        return
+    var regen_rate: float = get_level(6) * cfg_regen_per_level + prestige_regen_bonus()
+    if regen_rate <= 0.0:
+        return
+    var maxHP: float = 100.0 + get_level(0) * cfg_hp_per_level + prestige_hp_bonus()
+    if gameData.health < maxHP:
+        gameData.health += _delta * regen_rate
+
+func _hook_character_energy_pre(_delta):
+    var ch = _get_hook_caller()
+    if ch == null:
+        return
+    ch.set_meta("_xp_energy_before", gameData.energy)
+
+func _hook_character_energy_post(_delta):
+    if gameData.starvation:
+        return
+    var ch = _get_hook_caller()
+    if ch == null or not ch.has_meta("_xp_energy_before"):
+        return
+    var before: float = ch.get_meta("_xp_energy_before")
+    var drained: float = before - gameData.energy
+    if drained > 0.0:
+        var bonus: float = get_level(3) * cfg_hunger_reduce + prestige_hunger_bonus()
+        gameData.energy = before - drained * (1.0 - bonus)
+
+func _hook_character_hydration_pre(_delta):
+    var ch = _get_hook_caller()
+    if ch == null:
+        return
+    ch.set_meta("_xp_hydration_before", gameData.hydration)
+
+func _hook_character_hydration_post(_delta):
+    if gameData.dehydration:
+        return
+    var ch = _get_hook_caller()
+    if ch == null or not ch.has_meta("_xp_hydration_before"):
+        return
+    var before: float = ch.get_meta("_xp_hydration_before")
+    var drained: float = before - gameData.hydration
+    if drained > 0.0:
+        var bonus: float = get_level(4) * cfg_thirst_reduce + prestige_thirst_bonus()
+        gameData.hydration = before - drained * (1.0 - bonus)
+
+func _hook_character_mental_pre(_delta):
+    var ch = _get_hook_caller()
+    if ch == null:
+        return
+    ch.set_meta("_xp_mental_before", gameData.mental)
+
+func _hook_character_mental_post(_delta):
+    # Heat branch in base is a regen, insanity branch is its own thing —
+    # neither should be scaled.
+    if gameData.heat or gameData.insanity:
+        return
+    var ch = _get_hook_caller()
+    if ch == null or not ch.has_meta("_xp_mental_before"):
+        return
+    var before: float = ch.get_meta("_xp_mental_before")
+    var drained: float = before - gameData.mental
+    if drained > 0.0:
+        var bonus: float = get_level(5) * cfg_mental_reduce + prestige_mental_bonus()
+        gameData.mental = before - drained * (1.0 - bonus)
+
+func _hook_character_stamina_pre(_delta):
+    var ch = _get_hook_caller()
+    if ch == null:
+        return
+    ch.set_meta("_xp_body_stamina_before", gameData.bodyStamina)
+    ch.set_meta("_xp_arm_stamina_before", gameData.armStamina)
+
+func _hook_character_stamina_post(_delta):
+    var ch = _get_hook_caller()
+    if ch == null or not ch.has_meta("_xp_body_stamina_before"):
+        return
+    var bonus: float = get_level(1) * cfg_stamina_reduce + prestige_stamina_bonus()
+    var body_before: float = ch.get_meta("_xp_body_stamina_before")
+    var arm_before: float = ch.get_meta("_xp_arm_stamina_before")
+    var body_drained: float = body_before - gameData.bodyStamina
+    var arm_drained: float = arm_before - gameData.armStamina
+    if body_drained > 0.0:
+        gameData.bodyStamina = body_before - body_drained * (1.0 - bonus)
+    if arm_drained > 0.0:
+        gameData.armStamina = arm_before - arm_drained * (1.0 - bonus)
+
+func _hook_character_temperature_pre(_delta):
+    var ch = _get_hook_caller()
+    if ch == null:
+        return
+    ch.set_meta("_xp_temperature_before", gameData.temperature)
+
+func _hook_character_temperature_post(_delta):
+    # Regen branches (summer / indoor shelter / tutorial / heat) don't scale.
+    var is_regenerating: bool = gameData.season == 1 or gameData.shelter or gameData.tutorial or gameData.heat
+    if is_regenerating:
+        return
+    var ch = _get_hook_caller()
+    if ch == null or not ch.has_meta("_xp_temperature_before"):
+        return
+    var before: float = ch.get_meta("_xp_temperature_before")
+    var drained: float = before - gameData.temperature
+    if drained > 0.0:
+        var bonus: float = get_level(7) * cfg_coldres_reduce + prestige_coldres_bonus()
+        gameData.temperature = before - drained * (1.0 - bonus)
+
+# Clamp is a full replacement — XP's wider max HP would be clamped back down
+# by vanilla's hardcoded 100. skip_super() keeps our clamps as the final word.
+func _hook_character_clamp():
+    var maxHP: float = 100.0 + get_level(0) * cfg_hp_per_level + prestige_hp_bonus()
+    gameData.health       = clampf(gameData.health, 0, maxHP)
+    gameData.energy       = clampf(gameData.energy, 0, 100)
+    gameData.hydration    = clampf(gameData.hydration, 0, 100)
+    gameData.mental       = clampf(gameData.mental, 0, 100)
+    gameData.temperature  = clampf(gameData.temperature, 0, 100)
+    gameData.cat          = clampf(gameData.cat, 0, 100)
+    gameData.bodyStamina  = clampf(gameData.bodyStamina, 0, 100)
+    gameData.armStamina   = clampf(gameData.armStamina, 0, 100)
+    gameData.oxygen       = clampf(gameData.oxygen, 0, 100)
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib != null:
+        lib.skip_super()
+
+func _hook_character_death_pre():
+    if cfg_death_resets:
+        ResetXP()
+
+func _hook_character_consume_post(item: ItemData):
+    award_skillbook_xp(item)
+
+func _get_hook_caller():
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null:
+        return null
+    var c = lib._caller
+    if c == null or not is_instance_valid(c):
+        return null
+    return c
+
+# Interface hooks — replaces the old Interface.gd subclass under MML v3.0.0.
+#   Drop / ContextPlace  → replace + skip_super for skillbooks; fall through otherwise
+#   Open                 → post-hook, lazy-build the Skills UI
+#   HideAllTools / DisableTools / EnableTools / LoadDefaultTool → post-hooks,
+#                          mirror the skills button to the vanilla tool states
+#   UpdateStats          → post-hook, apply carry-weight bonus on top of super
+# The _process override that polled UpdateSkillsUI is now part of this
+# autoload's own _process (see _poll_skills_ui_refresh call site).
+func _register_interface_hooks() -> void:
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null:
+        push_warning("[XPSkillsSystem] RTVModLib not available — Interface hooks disabled")
+        return
+    lib.hook("interface-drop",                _hook_interface_drop)
+    lib.hook("interface-contextplace",        _hook_interface_contextplace)
+    lib.hook("interface-open-post",           _hook_interface_open_post)
+    lib.hook("interface-hidealltools-post",   _hook_interface_hidealltools_post)
+    lib.hook("interface-disabletools-post",   _hook_interface_disabletools_post)
+    lib.hook("interface-enabletools-post",    _hook_interface_enabletools_post)
+    lib.hook("interface-loaddefaulttool-post", _hook_interface_loaddefaulttool_post)
+    lib.hook("interface-updatestats-post",    _hook_interface_updatestats_post)
+
+func _hook_interface_drop(target) -> void:
+    if target == null or target.slotData == null or target.slotData.itemData == null:
+        return
+    var f: String = str(target.slotData.itemData.file)
+    if not f.begins_with("XPSkillbook_"):
+        return
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null: return
+    var iface = lib._caller
+    if iface == null or not is_instance_valid(iface):
+        return
+    _drop_skillbook(iface, target, _get_skillbook_pickup(f))
+    lib.skip_super()
+
+func _hook_interface_contextplace() -> void:
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null: return
+    var iface = lib._caller
+    if iface == null or not is_instance_valid(iface):
+        return
+    var ctx = iface.contextItem
+    if ctx == null or ctx.slotData == null or ctx.slotData.itemData == null:
+        return
+    var f: String = str(ctx.slotData.itemData.file)
+    if not f.begins_with("XPSkillbook_"):
+        return
+    _place_skillbook(iface, _get_skillbook_pickup(f))
+    lib.skip_super()
+
+func _hook_interface_open_post() -> void:
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null: return
+    var iface = lib._caller
+    if iface == null or not is_instance_valid(iface):
+        return
+    # Rebuild if UI was freed (scene change) or never built.
+    if not skillsBuilt or skillsUI == null or not is_instance_valid(skillsUI):
+        BuildSkillsUI(iface)
+        skillsBuilt = true
+    RefreshSkillDescs()
+
+func _hook_interface_hidealltools_post() -> void:
+    if skillsUI and is_instance_valid(skillsUI):
+        skillsUI.hide()
+
+func _hook_interface_disabletools_post() -> void:
+    if skillsButton and is_instance_valid(skillsButton):
+        skillsButton.disabled = true
+
+func _hook_interface_enabletools_post() -> void:
+    if skillsButton and is_instance_valid(skillsButton):
+        skillsButton.disabled = false
+
+func _hook_interface_loaddefaulttool_post(_tool: int) -> void:
+    if skillsButton and is_instance_valid(skillsButton):
+        skillsButton.set_pressed_no_signal(false)
+
+func _hook_interface_updatestats_post(updateLabels: bool) -> void:
+    # Apply Pack Mule carry-weight bonus on top of whatever vanilla (and any
+    # mod between us and vanilla) already computed. Idempotent labels refresh.
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null: return
+    var iface = lib._caller
+    if iface == null or not is_instance_valid(iface):
+        return
+    var bonus: float = get_level(2) * cfg_carry_per_level + prestige_carry_bonus()
+    if bonus == 0.0:
+        return
+    iface.currentInventoryCapacity += bonus
+    if iface.currentInventoryWeight > iface.currentInventoryCapacity:
+        if !gameData.overweight and iface.character:
+            iface.character.Overweight(true)
+    elif iface.character:
+        iface.character.Overweight(false)
+    if updateLabels:
+        if iface.currentInventoryCapacity > 0:
+            iface.inventoryWeightPercentage = iface.currentInventoryWeight / iface.currentInventoryCapacity
+        iface.inventoryCapacity.text = str("%.1f" % iface.currentInventoryCapacity)
+        iface.equipmentCapacity.text = str(int(round(iface.currentInventoryCapacity))) + "kg"
+        if iface.inventoryWeightPercentage > 1: iface.inventoryWeight.modulate = Color.RED
+        elif iface.inventoryWeightPercentage >= 0.5: iface.inventoryWeight.modulate = Color.YELLOW
+        else: iface.inventoryWeight.modulate = Color.GREEN
+
+# Helper: drop a skillbook as a pickup in the world. Same positioning logic
+# as the old Interface.gd subclass, with iface-scoped references.
+func _drop_skillbook(iface, target, scene: PackedScene) -> void:
+    var map = get_tree().current_scene.get_node_or_null("/root/Map")
+    if map == null or scene == null:
+        iface.PlayError()
+        return
+    var dir: Vector3
+    var pos: Vector3
+    var rot: Vector3
+    var force: float = 2.5
+    if iface.trader and iface.hoverGrid == null:
+        dir = iface.trader.global_transform.basis.z
+        pos = (iface.trader.global_position + Vector3(0, 1.0, 0)) + dir / 2
+        rot = Vector3(-25, iface.trader.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+    elif iface.hoverGrid != null and iface.hoverGrid.get_parent().name == "Container":
+        dir = iface.container.global_transform.basis.z
+        pos = (iface.container.global_position + Vector3(0, 0.5, 0)) + dir / 2
+        rot = Vector3(-25, iface.container.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+    else:
+        dir = -iface.camera.global_transform.basis.z
+        pos = (iface.camera.global_position + Vector3(0, -0.25, 0)) + dir / 2
+        rot = Vector3(-25, iface.camera.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+    var pickup = scene.instantiate()
+    map.add_child(pickup)
+    if !pickup.is_in_group("Item"):
+        pickup.add_to_group("Item")
+    pickup.position = pos
+    pickup.rotation_degrees = rot
+    pickup.linear_velocity = dir * force
+    if pickup.has_method("Unfreeze"):
+        pickup.Unfreeze()
+    var slot = SlotData.new()
+    slot.itemData = target.slotData.itemData
+    slot.amount = target.slotData.amount
+    pickup.slotData = slot
+    target.reparent(iface)
+    target.queue_free()
+    iface.PlayDrop()
+    iface.UpdateStats(true)
+
+func _place_skillbook(iface, scene: PackedScene) -> void:
+    if scene == null:
+        iface.PlayError()
+        return
+    var map = get_tree().current_scene.get_node_or_null("/root/Map")
+    if map == null:
+        iface.PlayError()
+        return
+    var pickup = scene.instantiate()
+    map.add_child(pickup)
+    if !pickup.is_in_group("Item"):
+        pickup.add_to_group("Item")
+    pickup.slotData.Update(iface.contextItem.slotData)
+    iface.placer.ContextPlace(pickup)
+    if iface.contextGrid:
+        iface.contextGrid.Pick(iface.contextItem)
+    iface.contextItem.reparent(iface)
+    iface.contextItem.queue_free()
+    iface.Reset()
+    iface.HideContext()
+    iface.PlayClick()
+    iface.UIManager.ToggleInterface()
+
+# ─── Skills UI builders (migrated from Interface.gd) ──────────────────────────
+
+func BuildSkillsUI(iface) -> void:
+    Engine.set_meta("XPInterface", iface)
+    var buttonsContainer = iface.get_node_or_null("Tools/Buttons/Margin/Buttons")
+    if buttonsContainer == null:
+        push_warning("[XPSkillsSystem] Tools/Buttons/Margin/Buttons not found on Interface")
+        return
+    skillsButton = Button.new()
+    skillsButton.text = "Skills"
+    skillsButton.toggle_mode = true
+    skillsButton.focus_mode = Control.FOCUS_NONE
+    skillsButton.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    skillsButton.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    buttonsContainer.add_child(skillsButton)
+    buttonsContainer.move_child(skillsButton, buttonsContainer.get_child_count() - 2)
+    skillsButton.pressed.connect(_on_skills_pressed.bind(iface))
+
+    var tools = iface.get_node_or_null("Tools")
+    if tools == null:
+        push_warning("[XPSkillsSystem] Tools node not found on Interface")
+        return
+    skillsUI = Control.new()
+    skillsUI.name = "Skills"
+    skillsUI.offset_left = 0
+    skillsUI.offset_top = 0
+    skillsUI.offset_right = 512
+    skillsUI.offset_bottom = 704
+    tools.add_child(skillsUI)
+    skillsUI.hide()
+
+    var bg = ColorRect.new()
+    bg.color = Color(0.08, 0.08, 0.08, 0.95)
+    bg.offset_right = 512
+    bg.offset_bottom = 704
+    skillsUI.add_child(bg)
+
+    var margin = MarginContainer.new()
+    margin.offset_right = 512
+    margin.offset_bottom = 704
+    margin.add_theme_constant_override("margin_left", 16)
+    margin.add_theme_constant_override("margin_right", 16)
+    margin.add_theme_constant_override("margin_top", 16)
+    margin.add_theme_constant_override("margin_bottom", 16)
+    skillsUI.add_child(margin)
+
+    var scroll = ScrollContainer.new()
+    scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    margin.add_child(scroll)
+
+    _skills_vbox = VBoxContainer.new()
+    _skills_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _skills_vbox.add_theme_constant_override("separation", 10)
+    scroll.add_child(_skills_vbox)
+
+    var header = HBoxContainer.new()
+    header.add_theme_constant_override("separation", 16)
+    _skills_vbox.add_child(header)
+
+    var titleLabel = Label.new()
+    titleLabel.text = "SKILLS"
+    titleLabel.add_theme_font_size_override("font_size", 20)
+    titleLabel.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0))
+    header.add_child(titleLabel)
+
+    skillsXPLabel = Label.new()
+    skillsXPLabel.text = "XP: 0"
+    skillsXPLabel.add_theme_font_size_override("font_size", 16)
+    skillsXPLabel.add_theme_color_override("font_color", Color(0.4, 1.0, 0.4))
+    skillsXPLabel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    skillsXPLabel.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+    header.add_child(skillsXPLabel)
+
+    var sep = HSeparator.new()
+    sep.custom_minimum_size.y = 4
+    _skills_vbox.add_child(sep)
+
+    _build_skill_rows()
+    _build_prestige_section(iface)
+
+
+func _build_skill_rows() -> void:
+    skillRows.clear()
+    skillDescLabels.clear()
+    _skill_row_panels.clear()
+    for i in skillNames.size():
+        if not is_skill_enabled(i):
+            skillRows.append(null)
+            skillDescLabels.append(null)
+            continue
+        var rowPanel = PanelContainer.new()
+        rowPanel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        var stylebox = StyleBoxFlat.new()
+        stylebox.bg_color = Color(0.12, 0.12, 0.12, 0.8)
+        stylebox.set_corner_radius_all(4)
+        stylebox.content_margin_left = 10
+        stylebox.content_margin_right = 10
+        stylebox.content_margin_top = 6
+        stylebox.content_margin_bottom = 6
+        rowPanel.add_theme_stylebox_override("panel", stylebox)
+        _skills_vbox.add_child(rowPanel)
+
+        var row = HBoxContainer.new()
+        row.add_theme_constant_override("separation", 10)
+        rowPanel.add_child(row)
+
+        var nameLabel = Label.new()
+        nameLabel.text = skillNames[i]
+        nameLabel.custom_minimum_size.x = 120
+        nameLabel.add_theme_font_size_override("font_size", 14)
+        nameLabel.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0))
+        row.add_child(nameLabel)
+
+        var levelLabel = Label.new()
+        levelLabel.text = "0/" + str(cfg_max_levels[i])
+        levelLabel.custom_minimum_size.x = 42
+        levelLabel.add_theme_font_size_override("font_size", 14)
+        levelLabel.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+        levelLabel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        row.add_child(levelLabel)
+
+        var prestigeLabel = Label.new()
+        prestigeLabel.text = ""
+        prestigeLabel.custom_minimum_size.x = 32
+        prestigeLabel.add_theme_font_size_override("font_size", 13)
+        prestigeLabel.add_theme_color_override("font_color", Color(0.95, 0.55, 1.0))
+        prestigeLabel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        prestigeLabel.tooltip_text = "Prestige ranks in this skill"
+        row.add_child(prestigeLabel)
+
+        var descLabel = Label.new()
+        descLabel.text = skillDescs[i]
+        descLabel.add_theme_font_size_override("font_size", 12)
+        descLabel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        descLabel.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+        descLabel.clip_text = true
+        descLabel.tooltip_text = skillDescs[i]
+        row.add_child(descLabel)
+        skillDescLabels.append(descLabel)
+
+        var upgradeBtn = Button.new()
+        upgradeBtn.text = "+" + str(cfg_cost_bases[i]) + " XP"
+        upgradeBtn.custom_minimum_size.x = 90
+        upgradeBtn.custom_minimum_size.y = 30
+        upgradeBtn.focus_mode = Control.FOCUS_NONE
+        upgradeBtn.pressed.connect(_on_skill_upgrade.bind(i))
+        row.add_child(upgradeBtn)
+
+        skillRows.append({"level": levelLabel, "prestige": prestigeLabel, "button": upgradeBtn, "index": i})
+        _skill_row_panels.append(rowPanel)
+
+func RebuildSkills(iface) -> void:
+    if not skillsBuilt or not _skills_vbox:
+        return
+    for panel in _skill_row_panels:
+        if panel and is_instance_valid(panel):
+            panel.queue_free()
+    _skill_row_panels.clear()
+    if _prestige_section and is_instance_valid(_prestige_section):
+        _prestige_section.queue_free()
+    _prestige_section = null
+    _prestige_button = null
+    _prestige_status_label = null
+    _build_skill_rows()
+    _build_prestige_section(iface)
+    RefreshSkillDescs()
+    UpdateSkillsUI()
+
+func RefreshSkillDescs() -> void:
+    if skillDescLabels.size() < 13: return
+    var descs = [
+        "+" + str(cfg_hp_per_level) + " Max HP",
+        "-" + str(int(cfg_stamina_reduce * 100)) + "% Stamina Drain",
+        "+" + str(cfg_carry_per_level) + "kg Carry Weight",
+        "-" + str(int(cfg_hunger_reduce * 100)) + "% Hunger Drain",
+        "-" + str(int(cfg_thirst_reduce * 100)) + "% Thirst Drain",
+        "-" + str(int(cfg_mental_reduce * 100)) + "% Mental Drain",
+        "+" + ("%.2f" % cfg_regen_per_level) + " HP/sec Regen",
+        "-" + str(int(cfg_coldres_reduce * 100)) + "% Cold Drain",
+        "-" + str(int(cfg_stealth_reduce * 100)) + "% AI Hearing Range",
+        "-" + str(int(cfg_recoil_reduce * 100)) + "% Weapon Recoil",
+        "+" + str(int(cfg_speed_bonus * 100)) + "% Movement Speed",
+        "+" + str(int(cfg_scavenger_chance * 100)) + "% Extra Loot Chance",
+        "-" + str(int(cfg_shake_reduce * 100)) + "% Camera Shake From Hits"
+    ]
+    for i in descs.size():
+        if skillDescLabels[i] != null:
+            skillDescLabels[i].text = descs[i]
+
+func _on_skills_pressed(iface) -> void:
+    if iface == null or not is_instance_valid(iface):
+        return
+    iface.HideAllTools()
+    if skillsUI and is_instance_valid(skillsUI):
+        skillsUI.show()
+    if iface.eventsButton:   iface.eventsButton.set_pressed_no_signal(false)
+    if iface.craftingButton: iface.craftingButton.set_pressed_no_signal(false)
+    if iface.notesButton:    iface.notesButton.set_pressed_no_signal(false)
+    if iface.mapButton:      iface.mapButton.set_pressed_no_signal(false)
+    if iface.casetteButton:  iface.casetteButton.set_pressed_no_signal(false)
+    if skillsButton and is_instance_valid(skillsButton):
+        skillsButton.set_pressed_no_signal(true)
+    UpdateSkillsUI()
+    iface.PlayClick()
+
+func _on_skill_upgrade(index: int) -> void:
+    var iface = _find_interface()
+    var currentLevel = get_level(index)
+    if currentLevel >= cfg_max_levels[index]:
+        if iface: iface.PlayError()
+        return
+    var cost = cfg_cost_bases[index] * (currentLevel + 1)
+    if xp < cost:
+        if iface: iface.PlayError()
+        return
+    xp -= cost
+    _set_level_by_index(index, currentLevel + 1)
+    SaveXP()
+    UpdateSkillsUI()
+    if iface:
+        iface.UpdateStats(true)
+        iface.PlayClick()
+
+func UpdateSkillsUI() -> void:
+    if skillsXPLabel == null or not is_instance_valid(skillsXPLabel): return
+    skillsXPLabel.text = "XP: " + str(xp) + "  (Total: " + str(xpTotal) + ")"
+    for row in skillRows:
+        if row == null:
+            continue
+        var i = row.index
+        var level = get_level(i)
+        row.level.text = str(level) + "/" + str(cfg_max_levels[i])
+        var nextCost = cfg_cost_bases[i] * (level + 1)
+        if level >= cfg_max_levels[i]:
+            row.button.text = "MAX"
+            row.button.disabled = true
+        else:
+            row.button.text = "+" + str(nextCost) + " XP"
+            row.button.disabled = xp < nextCost
+        var prank = get_prestige_count(i)
+        if "prestige" in row and row.prestige != null:
+            row.prestige.text = ("✦" + str(prank)) if prank > 0 else ""
+    _update_prestige_ui()
+
+# ─── Prestige UI ──────────────────────────────────────────────────────────────
+
+func _build_prestige_section(iface) -> void:
+    _prestige_section = VBoxContainer.new()
+    _prestige_section.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _prestige_section.add_theme_constant_override("separation", 6)
+    _skills_vbox.add_child(_prestige_section)
+
+    var spacer = Control.new()
+    spacer.custom_minimum_size.y = 8
+    _prestige_section.add_child(spacer)
+
+    var sep = HSeparator.new()
+    sep.custom_minimum_size.y = 2
+    _prestige_section.add_child(sep)
+
+    var prestigeHeader = Label.new()
+    prestigeHeader.text = "PRESTIGE"
+    prestigeHeader.add_theme_font_size_override("font_size", 16)
+    prestigeHeader.add_theme_color_override("font_color", Color(0.95, 0.55, 1.0))
+    _prestige_section.add_child(prestigeHeader)
+
+    _prestige_status_label = Label.new()
+    _prestige_status_label.text = ""
+    _prestige_status_label.add_theme_font_size_override("font_size", 12)
+    _prestige_status_label.add_theme_color_override("font_color", Color(0.65, 0.65, 0.7))
+    _prestige_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+    _prestige_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _prestige_section.add_child(_prestige_status_label)
+
+    _prestige_button = Button.new()
+    _prestige_button.text = "Prestige"
+    _prestige_button.custom_minimum_size.y = 34
+    _prestige_button.focus_mode = Control.FOCUS_NONE
+    _prestige_button.pressed.connect(_on_prestige_pressed.bind(iface))
+    _prestige_section.add_child(_prestige_button)
+
+func _update_prestige_ui() -> void:
+    if _prestige_button == null or _prestige_status_label == null:
+        return
+    if not cfg_prestige_enabled:
+        _prestige_button.disabled = true
+        _prestige_button.visible = false
+        _prestige_status_label.visible = false
+        return
+    _prestige_button.visible = true
+    _prestige_status_label.visible = true
+    var available = is_prestige_available()
+    _prestige_button.disabled = not available
+    if available:
+        _prestige_status_label.text = "All enabled skills maxed. Pick a stat to prestige — all XP and skill levels will be wiped in exchange for a permanent bonus to that stat."
+        _prestige_status_label.add_theme_color_override("font_color", Color(0.55, 1.0, 0.55))
+    else:
+        _prestige_status_label.text = "Max every enabled skill to unlock Prestige. Prestige grants a permanent stat bonus that survives death, in exchange for wiping all XP and levels."
+        _prestige_status_label.add_theme_color_override("font_color", Color(0.65, 0.65, 0.7))
+
+func _on_prestige_pressed(iface) -> void:
+    if not is_prestige_available():
+        if iface: iface.PlayError()
+        return
+    _show_prestige_picker(iface)
+    if iface: iface.PlayClick()
+
+func _close_prestige_modal() -> void:
+    if _prestige_modal and is_instance_valid(_prestige_modal):
+        _prestige_modal.queue_free()
+    _prestige_modal = null
+
+func _show_prestige_picker(iface) -> void:
+    _close_prestige_modal()
+    if skillsUI == null or not is_instance_valid(skillsUI):
+        return
+
+    _prestige_modal = Control.new()
+    _prestige_modal.offset_left = 0
+    _prestige_modal.offset_top = 0
+    _prestige_modal.offset_right = 512
+    _prestige_modal.offset_bottom = 704
+    _prestige_modal.mouse_filter = Control.MOUSE_FILTER_STOP
+    skillsUI.add_child(_prestige_modal)
+
+    var bg = ColorRect.new()
+    bg.color = Color(0.0, 0.0, 0.0, 0.85)
+    bg.offset_right = 512
+    bg.offset_bottom = 704
+    bg.mouse_filter = Control.MOUSE_FILTER_STOP
+    _prestige_modal.add_child(bg)
+
+    var margin = MarginContainer.new()
+    margin.offset_right = 512
+    margin.offset_bottom = 704
+    margin.add_theme_constant_override("margin_left", 20)
+    margin.add_theme_constant_override("margin_right", 20)
+    margin.add_theme_constant_override("margin_top", 24)
+    margin.add_theme_constant_override("margin_bottom", 24)
+    _prestige_modal.add_child(margin)
+
+    var vbox = VBoxContainer.new()
+    vbox.add_theme_constant_override("separation", 8)
+    margin.add_child(vbox)
+
+    var title = Label.new()
+    title.text = "CHOOSE PRESTIGE"
+    title.add_theme_font_size_override("font_size", 20)
+    title.add_theme_color_override("font_color", Color(0.95, 0.55, 1.0))
+    vbox.add_child(title)
+
+    var sub = Label.new()
+    sub.text = "Pick one stat. All XP and skill levels will be wiped."
+    sub.add_theme_font_size_override("font_size", 12)
+    sub.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+    sub.autowrap_mode = TextServer.AUTOWRAP_WORD
+    vbox.add_child(sub)
+
+    var sep2 = HSeparator.new()
+    sep2.custom_minimum_size.y = 4
+    vbox.add_child(sep2)
+
+    var scroll = ScrollContainer.new()
+    scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    scroll.custom_minimum_size.y = 480
+    vbox.add_child(scroll)
+
+    var list_vbox = VBoxContainer.new()
+    list_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    list_vbox.add_theme_constant_override("separation", 6)
+    scroll.add_child(list_vbox)
+
+    for i in skillNames.size():
+        if not is_skill_enabled(i):
+            continue
+        var cap_reached = not can_prestige_skill(i)
+        var prank = get_prestige_count(i)
+        var cap = get_prestige_cap(i)
+        var row_btn = Button.new()
+        row_btn.custom_minimum_size.y = 36
+        row_btn.focus_mode = Control.FOCUS_NONE
+        var cap_text = "∞" if cap < 0 else str(cap)
+        var prefix = "[MAX] " if cap_reached else ""
+        row_btn.text = "%s%s  (✦%d / %s)" % [prefix, skillNames[i], prank, cap_text]
+        row_btn.disabled = cap_reached
+        row_btn.pressed.connect(_on_prestige_skill_picked.bind(iface, i))
+        list_vbox.add_child(row_btn)
+
+    var spacer2 = Control.new()
+    spacer2.custom_minimum_size.y = 8
+    vbox.add_child(spacer2)
+
+    var cancel_btn = Button.new()
+    cancel_btn.text = "Cancel"
+    cancel_btn.custom_minimum_size.y = 34
+    cancel_btn.focus_mode = Control.FOCUS_NONE
+    cancel_btn.pressed.connect(_close_prestige_modal)
+    vbox.add_child(cancel_btn)
+
+func _on_prestige_skill_picked(iface, skill_index: int) -> void:
+    _show_prestige_confirm(iface, skill_index)
+
+func _show_prestige_confirm(iface, skill_index: int) -> void:
+    _close_prestige_modal()
+    if skillsUI == null or not is_instance_valid(skillsUI):
+        return
+    var skill_name = skillNames[skill_index]
+    var current_rank = get_prestige_count(skill_index)
+
+    _prestige_modal = Control.new()
+    _prestige_modal.offset_left = 0
+    _prestige_modal.offset_top = 0
+    _prestige_modal.offset_right = 512
+    _prestige_modal.offset_bottom = 704
+    _prestige_modal.mouse_filter = Control.MOUSE_FILTER_STOP
+    skillsUI.add_child(_prestige_modal)
+
+    var bg = ColorRect.new()
+    bg.color = Color(0.0, 0.0, 0.0, 0.9)
+    bg.offset_right = 512
+    bg.offset_bottom = 704
+    bg.mouse_filter = Control.MOUSE_FILTER_STOP
+    _prestige_modal.add_child(bg)
+
+    var center = CenterContainer.new()
+    center.offset_right = 512
+    center.offset_bottom = 704
+    _prestige_modal.add_child(center)
+
+    var panel = PanelContainer.new()
+    var stylebox = StyleBoxFlat.new()
+    stylebox.bg_color = Color(0.12, 0.12, 0.14, 1.0)
+    stylebox.set_border_width_all(2)
+    stylebox.border_color = Color(0.95, 0.55, 1.0, 0.8)
+    stylebox.set_corner_radius_all(6)
+    stylebox.content_margin_left = 20
+    stylebox.content_margin_right = 20
+    stylebox.content_margin_top = 18
+    stylebox.content_margin_bottom = 18
+    panel.add_theme_stylebox_override("panel", stylebox)
+    panel.custom_minimum_size = Vector2(400, 0)
+    center.add_child(panel)
+
+    var vbox = VBoxContainer.new()
+    vbox.add_theme_constant_override("separation", 10)
+    panel.add_child(vbox)
+
+    var title = Label.new()
+    title.text = "PRESTIGE " + skill_name.to_upper() + "?"
+    title.add_theme_font_size_override("font_size", 18)
+    title.add_theme_color_override("font_color", Color(0.95, 0.55, 1.0))
+    title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    vbox.add_child(title)
+
+    var msg = Label.new()
+    msg.text = "This will wipe all your XP and skill levels. " + skill_name + "'s prestige rank will go from " + str(current_rank) + " to " + str(current_rank + 1) + ". This cannot be undone."
+    msg.add_theme_font_size_override("font_size", 12)
+    msg.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
+    msg.autowrap_mode = TextServer.AUTOWRAP_WORD
+    msg.custom_minimum_size.x = 360
+    vbox.add_child(msg)
+
+    var spacer = Control.new()
+    spacer.custom_minimum_size.y = 4
+    vbox.add_child(spacer)
+
+    var btn_row = HBoxContainer.new()
+    btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+    btn_row.add_theme_constant_override("separation", 12)
+    vbox.add_child(btn_row)
+
+    var confirm_btn = Button.new()
+    confirm_btn.text = "Yes, Prestige"
+    confirm_btn.custom_minimum_size = Vector2(160, 36)
+    confirm_btn.focus_mode = Control.FOCUS_NONE
+    confirm_btn.pressed.connect(_on_prestige_confirmed.bind(iface, skill_index))
+    btn_row.add_child(confirm_btn)
+
+    var cancel_btn = Button.new()
+    cancel_btn.text = "Cancel"
+    cancel_btn.custom_minimum_size = Vector2(120, 36)
+    cancel_btn.focus_mode = Control.FOCUS_NONE
+    cancel_btn.pressed.connect(_close_prestige_modal)
+    btn_row.add_child(cancel_btn)
+
+func _on_prestige_confirmed(iface, skill_index: int) -> void:
+    if do_prestige(skill_index):
+        if iface: iface.PlayClick()
+        _close_prestige_modal()
+        UpdateSkillsUI()
+        if iface: iface.UpdateStats(true)
+    else:
+        if iface: iface.PlayError()
+
+# Locate the current Interface node to route UI-callback events that need it
+# (like skill-upgrade buttons) without capturing it at connect time.
+func _find_interface():
+    var scene = get_tree().current_scene
+    if scene == null:
+        return null
+    return scene.get_node_or_null("Core/UI/Interface")
+
+# Poll for Skills-UI refresh. Replaces the old Interface._process() override
+# that couldn't survive the take_over_path removal (vanilla Interface has no
+# _process). Cheap — the branch short-circuits when the UI isn't visible.
+func _poll_skills_ui_refresh(delta: float) -> void:
+    if skillsUI == null or not is_instance_valid(skillsUI) or not skillsUI.visible:
+        return
+    _xp_ui_refresh_timer += delta
+    if _xp_ui_refresh_timer >= 0.5:
+        _xp_ui_refresh_timer = 0.0
+        UpdateSkillsUI()
 
 func _install_skillbook_hooks():
     # Emergency bypass — drop this marker file if skill-book init ever
@@ -232,6 +1111,7 @@ func _install_skillbook_hooks():
     if FileAccess.file_exists("user://XPSkillsDisableBooks.txt"):
         print("[XP Skills] Bypass marker found — skipping skill-book init")
         return
+    _ensure_skillbook_mesh()
     # Catches SKILLBOOK_DEFS drift at boot instead of silently failing
     # inside award_skillbook_xp when a consumed book lists an unknown skill.
     for def in SKILLBOOK_DEFS:
@@ -257,8 +1137,10 @@ const SKILLBOOK_CACHE_PATH: String = "user://XPSkillsBookCache.cfg"
 # Bump whenever the on-disk .tres/.tscn layout changes so existing caches
 # get invalidated and rebuilt. v2 = icon referenced via ext_resource
 # instead of inline PackedByteArray. v3 = item.generalist flag set so
-# books appear in the Generalist trader's supply.
-const SKILLBOOK_CACHE_VERSION: int = 3
+# books appear in the Generalist trader's supply. v4 = pickup references
+# the runtime-parsed user://XPSkillbook_Mesh.res instead of the vanilla
+# res://Items/Books/Files/MS_Book.obj (UID-resolution flakiness fix).
+const SKILLBOOK_CACHE_VERSION: int = 5
 
 func _init_skillbook_items():
     # Fast path: if the source PNGs haven't changed since the last rebuild
@@ -289,30 +1171,34 @@ func _init_skillbook_items():
     cache.save(SKILLBOOK_CACHE_PATH)
 
 func _load_cached_skillbook(def: Dictionary) -> bool:
-    # On cache hit we only load the small ItemData (icon + tetris, ~128KB).
-    # The pickup .tscn drags in the 1024² cover texture (~1MB decoded per
-    # book), so we defer it until something actually needs to spawn — loot
-    # spawns store SlotData, not pickups, so in most sessions nobody pays.
+    # Preload both ItemData AND the pickup scene (with its cover texture)
+    # at boot. Lazy-loading was experimented with and reverted — community
+    # crash reports pointed at on-demand resolution during container-open
+    # flows. Costs ~1MB per book of decoded cover texture but keeps the
+    # resource cache fully warm before any gameplay interaction.
     var book_file: String = _skillbook_file(def)
     var item_path: String = "user://" + book_file + ".tres"
     var pickup_path: String = "user://" + book_file + ".tscn"
     var item = ResourceLoader.load(item_path)
-    if item == null or !FileAccess.file_exists(pickup_path):
+    if item == null:
+        return false
+    var scene = ResourceLoader.load(pickup_path)
+    if scene == null:
         return false
     _skillbook_catalog[book_file] = {
         "skills": def.skills.duplicate(),
         "item_data": item,
-        "pickup": null,
+        "pickup": scene,
         "pickup_path": pickup_path,
     }
     return true
 
 func _get_skillbook_pickup(book_file: String) -> PackedScene:
-    # Lazy-load the pickup scene on first use. Subsequent lookups hit
-    # Godot's resource cache directly.
     if !_skillbook_catalog.has(book_file):
         return null
     var entry = _skillbook_catalog[book_file]
+    # Preloaded at boot — this is just a catalog lookup now. Fall back to
+    # a disk read only if the entry was somehow cleared mid-session.
     if entry.get("pickup") != null:
         return entry.pickup
     var path: String = str(entry.get("pickup_path", ""))
@@ -424,13 +1310,15 @@ func _build_skillbook_files(def: Dictionary):
     if pf:
         pf.store_string(pickup_src)
         pf.close()
-    # Pickup scene is NOT pre-loaded here — _get_skillbook_pickup reads it
-    # from disk on first use. Mid-session art swaps aren't supported; a
-    # restart gives a clean cache.
+    # Eagerly load the pickup scene so its cover texture lives in the
+    # resource cache before any gameplay code touches it. Reverted the
+    # lazy-load experiment — community crash reports pointed at on-demand
+    # resolution during container-open flows.
+    var pickup_scene: PackedScene = ResourceLoader.load(pickup_path, "", ResourceLoader.CACHE_MODE_REPLACE)
     _skillbook_catalog[book_file] = {
         "skills": def.skills.duplicate(),
         "item_data": item,
-        "pickup": null,
+        "pickup": pickup_scene,
         "pickup_path": pickup_path,
     }
 
@@ -575,10 +1463,31 @@ func _build_skillbook_tetris_tscn(book_file: String, icon_path: String) -> Strin
     lines.append('')
     return "\n".join(lines)
 
+func _ensure_skillbook_mesh():
+    # Load the vanilla book mesh via the Godot resource loader (which
+    # reads the IMPORTED ArrayMesh — the raw .obj source is stripped
+    # from the PCK in packaged builds, so FileAccess can't read it as
+    # text) and save it to a stable user:// path that pickup .tscn
+    # files can reference without UID resolution.
+    if FileAccess.file_exists(SKILLBOOK_MESH_PATH):
+        return
+    var obj_path: String = "res://Items/Books/Files/MS_Book.obj"
+    if !ResourceLoader.exists(obj_path):
+        push_warning("[XP Skills] Vanilla book mesh not found at " + obj_path + " — skill books will fall back to BoxMesh")
+        return
+    var mesh = ResourceLoader.load(obj_path)
+    if mesh == null:
+        push_warning("[XP Skills] Failed to load " + obj_path + " — skill books will fall back to BoxMesh")
+        return
+    ResourceSaver.save(mesh, SKILLBOOK_MESH_PATH, ResourceSaver.FLAG_COMPRESS)
+
 func _build_skillbook_pickup_tscn(book_file: String, tint: Color, cover_tex_path: String = "") -> String:
-    # Reuses the vanilla book mesh (MS_Book.obj). If cover_tex_path is set,
-    # the material references that Texture2D via ExtResource("6"); otherwise
-    # we fall back to a flat albedo_color tint.
+    # Reuses the vanilla book mesh saved at SKILLBOOK_MESH_PATH. If that
+    # mesh file isn't present (ResourceLoader couldn't load the vanilla
+    # .obj for some reason) we fall back to a simple BoxMesh sub-resource
+    # so the scene still loads cleanly — an ext_resource to a missing
+    # file would fail the entire .tscn parse.
+    var has_mesh: bool = FileAccess.file_exists(SKILLBOOK_MESH_PATH)
     var lines := PackedStringArray()
     lines.append('[gd_scene format=3]')
     lines.append('')
@@ -586,7 +1495,8 @@ func _build_skillbook_pickup_tscn(book_file: String, tint: Color, cover_tex_path
     lines.append('[ext_resource type="Script" path="res://Scripts/Pickup.gd" id="2"]')
     lines.append('[ext_resource type="Resource" path="user://' + book_file + '.tres" id="3"]')
     lines.append('[ext_resource type="Script" path="res://Scripts/SlotData.gd" id="4"]')
-    lines.append('[ext_resource type="ArrayMesh" path="res://Items/Books/Files/MS_Book.obj" id="5"]')
+    if has_mesh:
+        lines.append('[ext_resource type="ArrayMesh" path="' + SKILLBOOK_MESH_PATH + '" id="5"]')
     if cover_tex_path != "":
         lines.append('[ext_resource type="Texture2D" path="' + cover_tex_path + '" id="6"]')
     lines.append('')
@@ -602,6 +1512,10 @@ func _build_skillbook_pickup_tscn(book_file: String, tint: Color, cover_tex_path
         lines.append('albedo_color = Color(%s, %s, %s, 1)' % [tint.r, tint.g, tint.b])
     lines.append('roughness = 0.85')
     lines.append('')
+    if !has_mesh:
+        lines.append('[sub_resource type="BoxMesh" id="BoxMesh_1"]')
+        lines.append('size = Vector3(0.14, 0.2, 0.02)')
+        lines.append('')
     lines.append('[sub_resource type="BoxShape3D" id="BoxShape_1"]')
     lines.append('size = Vector3(0.14, 0.2, 0.02)')
     lines.append('')
@@ -617,7 +1531,10 @@ func _build_skillbook_pickup_tscn(book_file: String, tint: Color, cover_tex_path
     lines.append('[node name="Mesh" type="MeshInstance3D" parent="."]')
     lines.append('layers = 4')
     lines.append('visibility_range_end = 25.0')
-    lines.append('mesh = ExtResource("5")')
+    if has_mesh:
+        lines.append('mesh = ExtResource("5")')
+    else:
+        lines.append('mesh = SubResource("BoxMesh_1")')
     lines.append('surface_material_override/0 = SubResource("Material_1")')
     lines.append('')
     lines.append('[node name="Collision" type="CollisionShape3D" parent="."]')
@@ -684,6 +1601,8 @@ func _respawn_skillbooks_in_shelter(shelter_name: String):
             continue
         var pickup = pickup_scene.instantiate()
         map.add_child(pickup)
+        if !pickup.is_in_group("Item"):
+            pickup.add_to_group("Item")
         pickup.slotData.Update(item.slotData)
         pickup.name = item.name
         pickup.global_position = item.position
@@ -734,6 +1653,7 @@ func _copy_file_bytes(src: String, dst: String):
     f_out.close()
 
 func _process(delta):
+    _poll_skills_ui_refresh(delta)
     # Detect menu→game transition to check for new game
     if _prev_menu and !gameData.menu:
         # Patty Profiles compat: if the active profile changed while the
@@ -848,18 +1768,6 @@ func is_player_kill() -> bool:
     if last_grenade_time > 0 and (Time.get_ticks_msec() - last_grenade_time) <= GRENADE_WINDOW_MS:
         return true
     return false
-
-func overrideScript(path: String):
-    var script = load(path)
-    if !script:
-        push_warning("XPSkillsSystem: Failed to load " + path)
-        return
-    script.reload()
-    var parent = script.get_base_script()
-    if !parent:
-        push_warning("XPSkillsSystem: No base script for " + path)
-        return
-    script.take_over_path(parent.resource_path)
 
 func _on_node_added(node: Node):
     # Recoil reduction on weapon equip
@@ -1053,24 +1961,20 @@ func _load_scavenge_sfx():
         _sfx_search = AudioStreamMP3.new()
         _sfx_search.data = f.get_buffer(f.get_length())
         f.close()
-    f = FileAccess.open(base + "/door.mp3", FileAccess.READ)
-    if f:
-        _sfx_door = AudioStreamMP3.new()
-        _sfx_door.data = f.get_buffer(f.get_length())
-        f.close()
 
 func _show_scavenge_notify(ui_manager, item_name: String):
-    _load_scavenge_sfx()
-    var sfx = _sfx_search
-    if _sfx_door and randf() < 0.002:
-        sfx = _sfx_door
-    if sfx:
-        var player = AudioStreamPlayer.new()
-        player.stream = sfx
-        player.volume_db = 0.0
-        get_tree().root.add_child(player)
-        player.play()
-        player.finished.connect(player.queue_free)
+    if cfg_scavenger_sfx_enabled:
+        _load_scavenge_sfx()
+        if _sfx_search:
+            var player = AudioStreamPlayer.new()
+            player.stream = _sfx_search
+            # Linear 0-100 → dB. 100 = 0 dB (unchanged), 0 = silent (-60 dB
+            # floor). linear_to_db maps 1.0 → 0 dB, 0.01 → ~-40 dB.
+            var linear: float = clamp(cfg_scavenger_sfx_volume / 100.0, 0.0, 1.0)
+            player.volume_db = linear_to_db(linear) if linear > 0.001 else -60.0
+            get_tree().root.add_child(player)
+            player.play()
+            player.finished.connect(player.queue_free)
     var label = Label.new()
     label.text = "⭐ Scavenger: +1 " + item_name
     label.add_theme_font_size_override("font_size", 16)
@@ -1656,6 +2560,21 @@ func _register_mcm():
         "menu_pos" = 48
     })
 
+    # ─── Scavenger SFX ───
+    _config.set_value("Bool", "cfg_scavenger_sfx_enabled", {
+        "name" = "Scavenger SFX Enabled",
+        "tooltip" = "Play a sound cue when the Scavenger skill procs bonus loot from a container. Turn off for silent scavenging.",
+        "default" = true, "value" = true,
+        "menu_pos" = 49
+    })
+    _config.set_value("Int", "cfg_scavenger_sfx_volume", {
+        "name" = "Scavenger SFX Volume (%)",
+        "tooltip" = "Playback volume of the Scavenger bonus-loot sound cue. 100 = unchanged, 0 = silent (same as disabling).",
+        "default" = 80, "value" = 80,
+        "minRange" = 0, "maxRange" = 100,
+        "menu_pos" = 50
+    })
+
     if !FileAccess.file_exists(MCM_FILE_PATH + "/config.ini"):
         DirAccess.open("user://").make_dir_recursive(MCM_FILE_PATH)
         _config.save(MCM_FILE_PATH + "/config.ini")
@@ -1746,6 +2665,9 @@ func _apply_mcm_config(config: ConfigFile):
     cfg_skillbooks_enabled = _mcm_val(config, "Bool", "cfg_skillbooks_enabled", cfg_skillbooks_enabled)
     cfg_skillbook_base_xp = int(_mcm_val(config, "Int", "cfg_skillbook_base_xp", cfg_skillbook_base_xp))
     cfg_skillbook_dual_multiplier = _mcm_val(config, "Int", "cfg_skillbook_dual_multiplier", 60) / 100.0
+    # Scavenger SFX
+    cfg_scavenger_sfx_enabled = _mcm_val(config, "Bool", "cfg_scavenger_sfx_enabled", cfg_scavenger_sfx_enabled)
+    cfg_scavenger_sfx_volume = int(_mcm_val(config, "Int", "cfg_scavenger_sfx_volume", cfg_scavenger_sfx_volume))
     # Rebuild caps array from the single non-Vitality cap slider. Vitality
     # stays uncapped (-1); every other slot uses the MCM value.
     var shared_cap = int(_mcm_val(config, "Int", "cfg_prestige_cap", 10))
@@ -1780,6 +2702,8 @@ func LoadConfig():
         cfg_skillbooks_enabled = cfg.get_value("skillbooks", "enabled", true)
         cfg_skillbook_base_xp = int(cfg.get_value("skillbooks", "base_xp", 200))
         cfg_skillbook_dual_multiplier = float(cfg.get_value("skillbooks", "dual_multiplier", 0.6))
+        cfg_scavenger_sfx_enabled = cfg.get_value("scavenger", "sfx_enabled", true)
+        cfg_scavenger_sfx_volume = int(cfg.get_value("scavenger", "sfx_volume", 80))
         for sid in skill_ids:
             cfg_skill_enabled[sid] = cfg.get_value("toggles", sid, true)
         var ml = cfg.get_value("skills", "max_levels", "10,10,10,10,10,10,5,10,10,10,5,5,5")
@@ -1813,6 +2737,8 @@ func SaveConfig():
     cfg.set_value("skillbooks", "enabled", cfg_skillbooks_enabled)
     cfg.set_value("skillbooks", "base_xp", cfg_skillbook_base_xp)
     cfg.set_value("skillbooks", "dual_multiplier", cfg_skillbook_dual_multiplier)
+    cfg.set_value("scavenger", "sfx_enabled", cfg_scavenger_sfx_enabled)
+    cfg.set_value("scavenger", "sfx_volume", cfg_scavenger_sfx_volume)
     for sid in skill_ids:
         cfg.set_value("toggles", sid, cfg_skill_enabled[sid])
     var ml = ",".join(cfg_max_levels.map(func(v): return str(v)))
@@ -1858,19 +2784,12 @@ func SaveXP():
     _ensure_marker()
 
 func _sync_to_gamedata():
-    # Mirror our skill levels to the game's built-in XP fields so that even if
-    # another mod overrides Character.gd / Interface.gd (stomping our override),
-    # the base game code still picks up the correct values for HP cap, stamina,
-    # carry weight, hunger, thirst, mental, and regen.
-    gameData.xp = xp
-    gameData.xpTotal = xpTotal
-    gameData.xpHealth = get_level(0)
-    gameData.xpStamina = get_level(1)
-    gameData.xpCarry = get_level(2)
-    gameData.xpHunger = get_level(3)
-    gameData.xpThirst = get_level(4)
-    gameData.xpMental = get_level(5)
-    gameData.xpRegen = get_level(6)
+    # Obsolete under MML v3.0.0 / vanilla post-Apr-2026: base-game GameData.gd
+    # no longer declares xp / xpHealth / xpCarry / xpRegen / etc. (those fields
+    # lived in a modded pck). Mod-local state on XPMain (this instance) is now
+    # the single source of truth — hook callbacks and UI read it directly.
+    # Call site kept so SaveXP doesn't have to know about this change.
+    pass
 
 func LoadXP():
     var path = _get_xp_data_path()

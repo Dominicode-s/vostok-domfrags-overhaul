@@ -66,7 +66,111 @@ func _ready():
     else:
         LoadConfig()
     _apply_loot_config()
-    overrideScript("res://mods/CashSystem/Interface.gd")
+    _register_interface_hooks()
+
+# Register Interface.Drop / Interface.ContextPlace overrides via MML's
+# RTVModLib hook API. Replaces the legacy overrideScript() + take_over_path
+# pattern, which conflicts with other mods that override the same script under
+# MML v3.0.0's chain-rewrite pipeline. A replace hook fires INSTEAD of vanilla;
+# we call skip_super() to skip vanilla when the item is Cash, otherwise let
+# vanilla continue normally for every other item.
+func _register_interface_hooks() -> void:
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null:
+        push_warning("CashSystem: RTVModLib not available — Cash drop/place disabled")
+        return
+    lib.hook("interface-drop", _hook_interface_drop)
+    lib.hook("interface-contextplace", _hook_interface_contextplace)
+
+func _hook_interface_drop(target) -> void:
+    if target == null or target.slotData == null or target.slotData.itemData == null:
+        return
+    if target.slotData.itemData.file != CASH_FILE:
+        return
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null:
+        return
+    var iface = lib._caller
+    if iface == null or not is_instance_valid(iface):
+        return
+    if cash_pickup_scene == null:
+        iface.PlayError()
+        lib.skip_super()
+        return
+    _drop_cash_item(iface, target, cash_pickup_scene)
+    lib.skip_super()
+
+func _hook_interface_contextplace() -> void:
+    var lib = Engine.get_meta("RTVModLib", null)
+    if lib == null:
+        return
+    var iface = lib._caller
+    if iface == null or not is_instance_valid(iface):
+        return
+    var ctx_item = iface.contextItem
+    if ctx_item == null or ctx_item.slotData == null or ctx_item.slotData.itemData == null:
+        return
+    if ctx_item.slotData.itemData.file != CASH_FILE:
+        return
+    if cash_pickup_scene == null:
+        iface.PlayError()
+        lib.skip_super()
+        return
+    var map = get_tree().current_scene.get_node_or_null("/root/Map")
+    if map == null:
+        iface.PlayError()
+        lib.skip_super()
+        return
+    var pickup = cash_pickup_scene.instantiate()
+    map.add_child(pickup)
+    pickup.slotData.Update(ctx_item.slotData)
+    iface.placer.ContextPlace(pickup)
+    if iface.contextGrid:
+        iface.contextGrid.Pick(ctx_item)
+    ctx_item.reparent(iface)
+    ctx_item.queue_free()
+    iface.Reset()
+    iface.HideContext()
+    iface.PlayClick()
+    iface.UIManager.ToggleInterface()
+    lib.skip_super()
+
+func _drop_cash_item(iface, target, scene: PackedScene) -> void:
+    var map = get_tree().current_scene.get_node_or_null("/root/Map")
+    if map == null:
+        iface.PlayError()
+        return
+    var dir: Vector3
+    var pos: Vector3
+    var rot: Vector3
+    var force := 2.5
+    if iface.trader and iface.hoverGrid == null:
+        dir = iface.trader.global_transform.basis.z
+        pos = (iface.trader.global_position + Vector3(0, 1.0, 0)) + dir / 2
+        rot = Vector3(-25, iface.trader.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+    elif iface.hoverGrid != null and iface.hoverGrid.get_parent().name == "Container":
+        dir = iface.container.global_transform.basis.z
+        pos = (iface.container.global_position + Vector3(0, 0.5, 0)) + dir / 2
+        rot = Vector3(-25, iface.container.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+    else:
+        dir = -iface.camera.global_transform.basis.z
+        pos = (iface.camera.global_position + Vector3(0, -0.25, 0)) + dir / 2
+        rot = Vector3(-25, iface.camera.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+    var pickup = scene.instantiate()
+    map.add_child(pickup)
+    pickup.position = pos
+    pickup.rotation_degrees = rot
+    pickup.linear_velocity = dir * force
+    pickup.Unfreeze()
+    var slot = SlotData.new()
+    slot.itemData = target.slotData.itemData
+    slot.amount = target.slotData.amount
+    pickup.slotData = slot
+    target.reparent(iface)
+    target.queue_free()
+    iface.PlayDrop()
+    iface.UpdateStats(true)
+    cash_dropped.emit(slot.amount)
 
 func _on_scene_changed(scene_name: String):
     # After a shelter loads, the vanilla LoadShelter skips Cash items
@@ -132,18 +236,6 @@ func _refresh_cash_item_data():
                 node.slotData.itemData = cash_item_data
                 if amt > 0:
                     node.slotData.amount = amt
-
-func overrideScript(path: String):
-    var script = load(path)
-    if !script:
-        push_warning("CashSystem: Failed to load " + path)
-        return
-    script.reload()
-    var parent = script.get_base_script()
-    if !parent:
-        push_warning("CashSystem: No base script for " + path)
-        return
-    script.take_over_path(parent.resource_path)
 
 func _cleanup_stale_cache():
     # Remove legacy CashIcon.tres — icon is now embedded directly in ItemData

@@ -131,7 +131,147 @@ func _ready() -> void:
 	_inject_into_loot_pool()
 	_register_with_database()
 	_check_restore()
-	overrideScript("res://mods/SecureContainer/Interface.gd")
+	_register_interface_hooks()
+
+# Register Interface hover-getter, Drop, and ContextPlace overrides via MML's
+# RTVModLib hook API. Replaces legacy overrideScript() + take_over_path which
+# conflicts with other mods overriding the same script under MML v3.0.0's
+# chain-rewrite pipeline.
+func _register_interface_hooks() -> void:
+	var lib = Engine.get_meta("RTVModLib", null)
+	if lib == null:
+		push_warning("[SecureContainer] RTVModLib not available — Interface hooks disabled")
+		return
+	lib.hook("interface-gethoveritem",      _hook_interface_gethoveritem)
+	lib.hook("interface-gethovergrid",      _hook_interface_gethovergrid)
+	lib.hook("interface-gethoverslot",      _hook_interface_gethoverslot)
+	lib.hook("interface-gethoverequipment", _hook_interface_gethoverequipment)
+	lib.hook("interface-gethoverinfo",      _hook_interface_gethoverinfo)
+	lib.hook("interface-drop",              _hook_interface_drop)
+	lib.hook("interface-contextplace",      _hook_interface_contextplace)
+
+# Hover getters: return null when the mouse is over the SC panel (blocks
+# click-through). Otherwise let vanilla run by not calling skip_super().
+func _hook_interface_gethoveritem():
+	if _mouse_over_panel():
+		var lib = Engine.get_meta("RTVModLib", null)
+		if lib != null: lib.skip_super()
+		return null
+	return null
+
+func _hook_interface_gethovergrid():
+	if _mouse_over_panel():
+		var lib = Engine.get_meta("RTVModLib", null)
+		if lib != null: lib.skip_super()
+		return null
+	return null
+
+func _hook_interface_gethoverslot():
+	if _mouse_over_panel():
+		var lib = Engine.get_meta("RTVModLib", null)
+		if lib != null: lib.skip_super()
+		return null
+	return null
+
+func _hook_interface_gethoverequipment():
+	if _mouse_over_panel():
+		var lib = Engine.get_meta("RTVModLib", null)
+		if lib != null: lib.skip_super()
+		return null
+	return null
+
+func _hook_interface_gethoverinfo():
+	if _mouse_over_panel():
+		var lib = Engine.get_meta("RTVModLib", null)
+		if lib != null: lib.skip_super()
+		return null
+	return null
+
+func _hook_interface_drop(target) -> void:
+	var scene: PackedScene = _get_sc_pickup_scene(target)
+	if scene == null:
+		return
+	var lib = Engine.get_meta("RTVModLib", null)
+	if lib == null:
+		return
+	var iface = lib._caller
+	if iface == null or not is_instance_valid(iface):
+		return
+	_drop_sc_item(iface, target, scene)
+	lib.skip_super()
+
+func _hook_interface_contextplace() -> void:
+	var lib = Engine.get_meta("RTVModLib", null)
+	if lib == null:
+		return
+	var iface = lib._caller
+	if iface == null or not is_instance_valid(iface):
+		return
+	var ctx_item = iface.contextItem
+	if ctx_item == null:
+		return
+	var scene: PackedScene = _get_sc_pickup_scene(ctx_item)
+	if scene == null:
+		return
+	var map: Node = get_tree().current_scene.get_node_or_null("/root/Map")
+	if map == null:
+		iface.PlayError()
+		lib.skip_super()
+		return
+	var pickup: Node = scene.instantiate()
+	map.add_child(pickup)
+	pickup.slotData.Update(ctx_item.slotData)
+	iface.placer.ContextPlace(pickup)
+	if iface.contextGrid:
+		iface.contextGrid.Pick(ctx_item)
+	ctx_item.reparent(iface)
+	ctx_item.queue_free()
+	iface.Reset()
+	iface.HideContext()
+	iface.PlayClick()
+	iface.UIManager.ToggleInterface()
+	lib.skip_super()
+
+func _get_sc_pickup_scene(target: Node) -> PackedScene:
+	if target == null or target.slotData == null or target.slotData.itemData == null:
+		return null
+	return _pickup_scenes.get(target.slotData.itemData.file, null)
+
+func _drop_sc_item(iface: Node, target: Node, scene: PackedScene) -> void:
+	var map: Node = get_tree().current_scene.get_node_or_null("/root/Map")
+	if map == null:
+		iface.PlayError()
+		return
+	var dir: Vector3
+	var pos: Vector3
+	var rot: Vector3
+	var force: float = 2.5
+	if iface.trader and iface.hoverGrid == null:
+		dir = iface.trader.global_transform.basis.z
+		pos = (iface.trader.global_position + Vector3(0, 1.0, 0)) + dir / 2
+		rot = Vector3(-25, iface.trader.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+	elif iface.hoverGrid != null and iface.hoverGrid.get_parent().name == "Container":
+		dir = iface.container.global_transform.basis.z
+		pos = (iface.container.global_position + Vector3(0, 0.5, 0)) + dir / 2
+		rot = Vector3(-25, iface.container.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+	else:
+		dir = -iface.camera.global_transform.basis.z
+		pos = (iface.camera.global_position + Vector3(0, -0.25, 0)) + dir / 2
+		rot = Vector3(-25, iface.camera.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
+	var pickup: Node = scene.instantiate()
+	map.add_child(pickup)
+	pickup.position = pos
+	pickup.rotation_degrees = rot
+	pickup.linear_velocity = dir * force
+	pickup.Unfreeze()
+	var slot: SlotData = SlotData.new()
+	slot.itemData = target.slotData.itemData
+	slot.amount = 1
+	pickup.slotData = slot
+	target.reparent(iface)
+	target.queue_free()
+	iface.PlayDrop()
+	iface.UpdateStats(true)
 
 func _create_item_data() -> void:
 	for file_id: String in TIERS:
@@ -1306,33 +1446,6 @@ func _resolve_item_data(file_id: String) -> ItemData:
 				and node.slotData.itemData.file == file_id:
 			return node.slotData.itemData
 	return null
-
-# ── Script Override ───────────────────────────────────────────────────────────
-
-func overrideScript(path: String) -> void:
-	var script: Script = load(path)
-	if not script:
-		push_warning("[SecureContainer] Failed to load override: " + path)
-		return
-	script.reload()
-
-	# Determine the target path: try get_base_script() first, then parse extends annotation
-	var target_path: String = ""
-	var parent: Script = script.get_base_script()
-	if parent:
-		target_path = parent.resource_path
-	if target_path == "":
-		# Fallback: extract path from the first `extends "..."` line in source
-		for line: String in script.source_code.split("\n"):
-			var s: String = line.strip_edges()
-			if s.begins_with('extends "') and s.ends_with('"'):
-				target_path = s.substr(9, s.length() - 10)
-				break
-	if target_path == "":
-		push_warning("[SecureContainer] Could not determine base path for: " + path)
-		return
-	script.take_over_path(target_path)
-	print("[SecureContainer] Overrode: " + target_path)
 
 # ── Interface Helper ──────────────────────────────────────────────────────────
 

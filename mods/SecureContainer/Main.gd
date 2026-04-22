@@ -147,8 +147,11 @@ func _register_interface_hooks() -> void:
 	lib.hook("interface-gethoverslot",      _hook_interface_gethoverslot)
 	lib.hook("interface-gethoverequipment", _hook_interface_gethoverequipment)
 	lib.hook("interface-gethoverinfo",      _hook_interface_gethoverinfo)
-	lib.hook("interface-drop",              _hook_interface_drop)
-	lib.hook("interface-contextplace",      _hook_interface_contextplace)
+	# interface-drop / interface-contextplace: NOT hooked. The pouch scenes
+	# are registered with Database via Registry.SCENES (see _init_pickups),
+	# so vanilla Interface.Drop / ContextPlace find our scenes via
+	# Database.get(file_id) and spawn them natively. Pouches have amount=1
+	# and aren't stackable, so vanilla's box-splitting logic doesn't apply.
 
 # Hover getters: return null when the mouse is over the SC panel (blocks
 # click-through). Otherwise let vanilla run by not calling skip_super().
@@ -187,91 +190,12 @@ func _hook_interface_gethoverinfo():
 		return null
 	return null
 
-func _hook_interface_drop(target) -> void:
-	var scene: PackedScene = _get_sc_pickup_scene(target)
-	if scene == null:
-		return
-	var lib = Engine.get_meta("RTVModLib", null)
-	if lib == null:
-		return
-	var iface = lib._caller
-	if iface == null or not is_instance_valid(iface):
-		return
-	_drop_sc_item(iface, target, scene)
-	lib.skip_super()
-
-func _hook_interface_contextplace() -> void:
-	var lib = Engine.get_meta("RTVModLib", null)
-	if lib == null:
-		return
-	var iface = lib._caller
-	if iface == null or not is_instance_valid(iface):
-		return
-	var ctx_item = iface.contextItem
-	if ctx_item == null:
-		return
-	var scene: PackedScene = _get_sc_pickup_scene(ctx_item)
-	if scene == null:
-		return
-	var map: Node = get_tree().current_scene.get_node_or_null("/root/Map")
-	if map == null:
-		iface.PlayError()
-		lib.skip_super()
-		return
-	var pickup: Node = scene.instantiate()
-	map.add_child(pickup)
-	pickup.slotData.Update(ctx_item.slotData)
-	iface.placer.ContextPlace(pickup)
-	if iface.contextGrid:
-		iface.contextGrid.Pick(ctx_item)
-	ctx_item.reparent(iface)
-	ctx_item.queue_free()
-	iface.Reset()
-	iface.HideContext()
-	iface.PlayClick()
-	iface.UIManager.ToggleInterface()
-	lib.skip_super()
-
-func _get_sc_pickup_scene(target: Node) -> PackedScene:
-	if target == null or target.slotData == null or target.slotData.itemData == null:
-		return null
-	return _pickup_scenes.get(target.slotData.itemData.file, null)
-
-func _drop_sc_item(iface: Node, target: Node, scene: PackedScene) -> void:
-	var map: Node = get_tree().current_scene.get_node_or_null("/root/Map")
-	if map == null:
-		iface.PlayError()
-		return
-	var dir: Vector3
-	var pos: Vector3
-	var rot: Vector3
-	var force: float = 2.5
-	if iface.trader and iface.hoverGrid == null:
-		dir = iface.trader.global_transform.basis.z
-		pos = (iface.trader.global_position + Vector3(0, 1.0, 0)) + dir / 2
-		rot = Vector3(-25, iface.trader.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
-	elif iface.hoverGrid != null and iface.hoverGrid.get_parent().name == "Container":
-		dir = iface.container.global_transform.basis.z
-		pos = (iface.container.global_position + Vector3(0, 0.5, 0)) + dir / 2
-		rot = Vector3(-25, iface.container.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
-	else:
-		dir = -iface.camera.global_transform.basis.z
-		pos = (iface.camera.global_position + Vector3(0, -0.25, 0)) + dir / 2
-		rot = Vector3(-25, iface.camera.rotation_degrees.y + 180 + randf_range(-45, 45), 45)
-	var pickup: Node = scene.instantiate()
-	map.add_child(pickup)
-	pickup.position = pos
-	pickup.rotation_degrees = rot
-	pickup.linear_velocity = dir * force
-	pickup.Unfreeze()
-	var slot: SlotData = SlotData.new()
-	slot.itemData = target.slotData.itemData
-	slot.amount = 1
-	pickup.slotData = slot
-	target.reparent(iface)
-	target.queue_free()
-	iface.PlayDrop()
-	iface.UpdateStats(true)
+# SC pouches' Drop / ContextPlace are now handled by vanilla Interface.Drop
+# and Interface.ContextPlace — the scenes are registered on Database via
+# Registry.SCENES in _init_pickups(), so vanilla's Database.get(file_id)
+# lookup finds them and vanilla spawns them with the correct positioning
+# and context-handling. Previous _hook_interface_drop / _hook_interface_contextplace
+# / _get_sc_pickup_scene / _drop_sc_item helpers removed as redundant.
 
 func _create_item_data() -> void:
 	for file_id: String in TIERS:
@@ -361,6 +285,13 @@ func _init_pickups() -> void:
 		var scene: PackedScene = ResourceLoader.load(pickup_path, "", ResourceLoader.CACHE_MODE_REPLACE)
 		if scene:
 			_pickup_scenes[file_id] = scene
+			# Expose the pickup scene to vanilla's Database.get(file_id) lookup
+			# via MML v3.0.0's Registry API. Lets vanilla Interface.Drop /
+			# ContextPlace / loot spawners / shelter reload find our pouches
+			# without needing per-call-site hooks.
+			var lib = Engine.get_meta("RTVModLib", null)
+			if lib != null:
+				lib.register(lib.Registry.SCENES, file_id, scene)
 
 func _inject_into_loot_pool() -> void:
 	var loot_cfg: Node = _cfg()

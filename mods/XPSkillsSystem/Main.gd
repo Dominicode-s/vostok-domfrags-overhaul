@@ -2611,7 +2611,7 @@ func _on_mcm_save(config: ConfigFile):
     # Re-run the ItemData patch so flipping "Enable Skill Books" in MCM
     # takes effect immediately instead of requiring a restart.
     _install_skillbook_hooks()
-    var ui = Engine.get_meta("XPInterface", null)
+    var ui = (Engine.get_meta("XPInterface") if Engine.has_meta("XPInterface") else null)
     if ui:
         ui.RebuildSkills()
 
@@ -2905,7 +2905,7 @@ func award_skillbook_xp(item_data):
         xp += g
     xpTotal += int(round(total_xp))
     SaveXP()
-    var ui = Engine.get_meta("XPInterface", null)
+    var ui = (Engine.get_meta("XPInterface") if Engine.has_meta("XPInterface") else null)
     if ui and ui.has_method("UpdateSkillsUI"):
         ui.UpdateSkillsUI()
 

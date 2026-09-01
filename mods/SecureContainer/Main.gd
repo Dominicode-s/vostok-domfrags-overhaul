@@ -51,8 +51,58 @@ const TIERS: Dictionary = {
 	},
 }
 
-const SAVE_FILE: String = "user://SecureContainer.json"
-const SESSION_FILE: String = "user://SecureContainer_session.json"
+# Patty's Profiles gives each save slot its own game saves, but mod data files
+# in user:// are shared across every profile. Keying these by the active
+# profile stops pouch contents leaking between saves. With no profile active
+# (Patty's not installed) both fall back to the original flat paths, which are
+# also what the one-time migration in _migrate_legacy_saves() reads from.
+const SAVE_FILE_LEGACY: String = "user://SecureContainer.json"
+const SESSION_FILE_LEGACY: String = "user://SecureContainer_session.json"
+const ACTIVE_PROFILE_CFG: String = "user://profiles/active_profile.cfg"
+
+func _active_profile() -> String:
+	if not FileAccess.file_exists(ACTIVE_PROFILE_CFG):
+		return ""
+	var cfg := ConfigFile.new()
+	if cfg.load(ACTIVE_PROFILE_CFG) != OK:
+		return ""
+	return str(cfg.get_value("profiles", "active", ""))
+
+func _save_file() -> String:
+	var profile := _active_profile()
+	if profile.is_empty():
+		return SAVE_FILE_LEGACY
+	return "user://SecureContainer_%s.json" % profile
+
+func _session_file() -> String:
+	var profile := _active_profile()
+	if profile.is_empty():
+		return SESSION_FILE_LEGACY
+	return "user://SecureContainer_session_%s.json" % profile
+
+# Hand the pre-profile save to whichever profile loads first, then remove it.
+# Copying it into every profile instead would just reproduce the shared-file
+# bug this fix exists to close.
+func _migrate_legacy_saves() -> void:
+	if _active_profile().is_empty():
+		return
+	for pair in [[SAVE_FILE_LEGACY, _save_file()], [SESSION_FILE_LEGACY, _session_file()]]:
+		var legacy: String = pair[0]
+		var target: String = pair[1]
+		if not FileAccess.file_exists(legacy) or FileAccess.file_exists(target):
+			continue
+		var src := FileAccess.open(legacy, FileAccess.READ)
+		if src == null:
+			continue
+		var body := src.get_as_text()
+		src.close()
+		var dst := FileAccess.open(target, FileAccess.WRITE)
+		if dst == null:
+			continue
+		dst.store_string(body)
+		dst.close()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(legacy))
+		print("[SecureContainer] Migrated %s -> %s" % [legacy, target])
 
 # ── State ─────────────────────────────────────────────────────────────────────
 var gameData = preload("res://Resources/GameData.tres")
@@ -126,6 +176,7 @@ func _on_config_changed() -> void:
 
 func _ready() -> void:
 	Engine.set_meta("SecureContainer", self)
+	_migrate_legacy_saves()
 	_create_item_data()
 	_init_pickups()
 	_inject_into_loot_pool()
@@ -1246,15 +1297,15 @@ func _save_session() -> void:
 		data.panel_pos = [_panel_position.x, _panel_position.y]
 	for sd: Variant in _contents:
 		data.items.append(_serialize_slot_data(sd))
-	var f: FileAccess = FileAccess.open(SESSION_FILE, FileAccess.WRITE)
+	var f: FileAccess = FileAccess.open(_session_file(), FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data))
 		f.close()
 
 func _load_session() -> void:
-	if not FileAccess.file_exists(SESSION_FILE):
+	if not FileAccess.file_exists(_session_file()):
 		return
-	var f: FileAccess = FileAccess.open(SESSION_FILE, FileAccess.READ)
+	var f: FileAccess = FileAccess.open(_session_file(), FileAccess.READ)
 	if not f:
 		return
 	var parsed: Variant = JSON.parse_string(f.get_as_text())
@@ -1275,8 +1326,8 @@ func _load_session() -> void:
 		_contents[i] = _deserialize_slot_data(items_raw[i])
 
 func _delete_session() -> void:
-	if FileAccess.file_exists(SESSION_FILE):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(SESSION_FILE))
+	if FileAccess.file_exists(_session_file()):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_session_file()))
 
 # ── Death Persistence ─────────────────────────────────────────────────────────
 
@@ -1293,25 +1344,25 @@ func _save_contents() -> void:
 	for sd: Variant in _contents:
 		data.items.append(_serialize_slot_data(sd))
 
-	var f: FileAccess = FileAccess.open(SAVE_FILE, FileAccess.WRITE)
+	var f: FileAccess = FileAccess.open(_save_file(), FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data, "\t"))
 		f.close()
 		print("[SecureContainer] Saved %d secured items (tier: %s)" % [non_null.size(), _equipped_file])
 
 func _check_restore() -> void:
-	if FileAccess.file_exists(SAVE_FILE):
+	if FileAccess.file_exists(_save_file()):
 		print("[SecureContainer] Restore file found — will restore on next scene load")
 
 func _try_restore() -> void:
-	if not FileAccess.file_exists(SAVE_FILE):
+	if not FileAccess.file_exists(_save_file()):
 		return
 
 	var iface: Node = _get_interface()
 	if not iface:
 		return
 
-	var f: FileAccess = FileAccess.open(SAVE_FILE, FileAccess.READ)
+	var f: FileAccess = FileAccess.open(_save_file(), FileAccess.READ)
 	if not f:
 		return
 	var text: String = f.get_as_text()
@@ -1319,7 +1370,7 @@ func _try_restore() -> void:
 
 	var parsed: Variant = JSON.parse_string(text)
 	if not parsed or not (parsed is Dictionary):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_FILE))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_save_file()))
 		return
 
 	var tier_file: String = parsed.get("tier", "")
@@ -1342,7 +1393,7 @@ func _try_restore() -> void:
 	if tier_file != "" and tier_file in _item_data:
 		_pending_equip_tier = tier_file
 
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_FILE))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(_save_file()))
 
 	var item_count: int = _contents.filter(func(s: Variant) -> bool: return s != null).size()
 	if item_count > 0 or tier_file != "":

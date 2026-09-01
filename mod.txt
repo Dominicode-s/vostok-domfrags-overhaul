@@ -11,3 +11,9 @@ XPMain="res://mods/XPSkillsSystem/Main.gd"
 QuickStackMain="res://mods/QuickStack/Main.gd"
 RunSummaryMain="res://mods/RunSummary/Main.gd"
 VostokAIMain="res://mods/VostokAI/Main.gd"
+
+[dependencies]
+optional=["doinkoink-mcm"]
+
+[registry]
+enabled=true
